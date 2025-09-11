@@ -1,4 +1,5 @@
 import { useState } from 'react';
+import { useEffect } from 'react';
 
 export default function Home() {
   const [query, setQuery] = useState('');
@@ -12,6 +13,26 @@ export default function Home() {
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState('');
   const [showPanel, setShowPanel] = useState(false);
+  const [aiAvailable, setAiAvailable] = useState(true);
+
+  useEffect(() => {
+    let mounted = true;
+    (async () => {
+      try {
+        const r = await fetch('/api/ai/status');
+        if (!mounted) return;
+        if (!r.ok) {
+          setAiAvailable(false);
+          return;
+        }
+        const d = await r.json();
+        setAiAvailable(Boolean(d && d.openai));
+      } catch (e) {
+        if (mounted) setAiAvailable(false);
+      }
+    })();
+    return () => { mounted = false; };
+  }, []);
 
   const handleSearch = async (e) => {
     e.preventDefault();
@@ -44,9 +65,16 @@ export default function Home() {
     if (!query.trim()) return;
     setLoading(true);
     try {
-      const res = await fetch('/api/ai/extract', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ text: query }) });
-      const data = await res.json();
-      setTerms(data.terms || []);
+  const res = await fetch('/api/ai/extract', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ text: query }) });
+  const data = await res.json();
+  // Expect shape: { primary_terms: [], relation_queries: [], separate_terms: [] }
+  const prim = Array.isArray(data.primary_terms) ? data.primary_terms : [];
+  const rel = Array.isArray(data.relation_queries) ? data.relation_queries : [];
+  const sep = Array.isArray(data.separate_terms) ? data.separate_terms : [];
+  const all = [...prim, ...rel, ...sep].map(s => String(s).trim()).filter(Boolean).slice(0,8);
+  setTerms(all);
+  // store grouped chips separately for UI (optional)
+  setGrouped(prev => prev); // keep existing grouped until Search grouped is pressed
     } catch (e) {
       console.error(e);
     } finally { setLoading(false); }
@@ -115,9 +143,43 @@ export default function Home() {
         return;
       }
 
-      // At this point we have terms — request the digest
+      // At this point we have terms — prepare itemsByTerm and request the digest
       console.log('Requesting digest for terms:', useTerms);
-      const res = await fetch('/api/ai/digest', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ terms: useTerms, style }) });
+
+      // Build itemsByTerm by merging grouped results if available, otherwise call /search/grouped
+      let itemsByTerm = {};
+      if (grouped && (grouped.newsapi || grouped.google)) {
+        for (const t of useTerms) {
+          const n = (grouped.newsapi && grouped.newsapi[t]) || [];
+          const g = (grouped.google && grouped.google[t]) || [];
+          // merge, dedupe by title
+          const seen = new Set();
+          const merged = [...(n || []), ...(g || [])].filter(it => {
+            const key = (it.title || '').trim().toLowerCase();
+            if (!key || seen.has(key)) return false; seen.add(key); return true;
+          }).sort((a,b) => (new Date(b.publishedAt || 0)).getTime() - (new Date(a.publishedAt || 0)).getTime()).slice(0,5);
+          itemsByTerm[t] = merged;
+        }
+      } else {
+        // fetch grouped from server for these terms
+        const q = encodeURIComponent(useTerms.join(','));
+        const gRes = await fetch(`/api/search/grouped?terms=${q}`);
+        if (gRes.ok) {
+          const gData = await gRes.json();
+          for (const t of useTerms) {
+            const n = (gData.newsapi && gData.newsapi[t]) || [];
+            const g = (gData.google && gData.google[t]) || [];
+            const seen = new Set();
+            const merged = [...(n || []), ...(g || [])].filter(it => {
+              const key = (it.title || '').trim().toLowerCase();
+              if (!key || seen.has(key)) return false; seen.add(key); return true;
+            }).sort((a,b) => (new Date(b.publishedAt || 0)).getTime() - (new Date(a.publishedAt || 0)).getTime()).slice(0,5);
+            itemsByTerm[t] = merged;
+          }
+        }
+      }
+
+      const res = await fetch('/api/ai/digest', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ terms: useTerms, style, itemsByTerm }) });
       const text = await res.text();
       // show raw response when status is not OK to help debugging
       if (!res.ok) {
@@ -134,6 +196,7 @@ export default function Home() {
         setDigest(null);
       } else {
         console.log('Digest received', data.digests);
+        // data.digests is [{ term, style, summary_md }]
         setDigest(data.digests || null);
       }
     } catch (e) {
@@ -142,8 +205,85 @@ export default function Home() {
     } finally { setLoading(false); }
   };
 
+  const [selectedLinks, setSelectedLinks] = useState({});
+
+  const toggleSelect = (term, url) => {
+    setSelectedLinks(prev => {
+      const copy = { ...(prev || {}) };
+      copy[term] = copy[term] || {};
+      if (copy[term][url]) delete copy[term][url]; else copy[term][url] = true;
+      return copy;
+    });
+  };
+
+  const selectTop5ForTerm = (term) => {
+    const items = ((grouped && grouped.google && grouped.google[term]) || (grouped && grouped.newsapi && grouped.newsapi[term]) || []).slice(0,5);
+    const mapping = items.reduce((acc, it) => (acc[it.url] = true, acc), {});
+    // update UI selection immediately
+    setSelectedLinks(prev => ({ ...(prev || {}), [term]: mapping }));
+    // Immediately build a digest from these top links to avoid extra clicks
+    const links = items.map(it => it.url).filter(Boolean).slice(0,5);
+    if (links.length > 0) {
+      // fire-and-forget, keep UI responsive
+      buildDigestFromSelected(term, links).catch(e => console.error('Auto-build digest failed', e));
+    }
+  };
+
+  const buildDigestFromSelected = async (term, linksOverride) => {
+    setLoading(true);
+    setError('');
+    try {
+      const linksFromState = selectedLinks[term] ? Object.keys(selectedLinks[term]) : [];
+      // use explicit override if provided to avoid race conditions with state
+      let finalLinks = Array.isArray(linksOverride) && linksOverride.length > 0 ? linksOverride.slice(0,5) : linksFromState.slice(0,5);
+      // fallback to top 5 google then newsapi if still empty
+      if (finalLinks.length === 0) {
+        const g = (grouped && grouped.google && grouped.google[term]) || [];
+        const n = (grouped && grouped.newsapi && grouped.newsapi[term]) || [];
+        finalLinks = (g.length ? g : n).slice(0,5).map(it => it.url).filter(Boolean);
+      }
+      if (finalLinks.length === 0) {
+        setError('No links available for digest');
+        setLoading(false);
+        return;
+      }
+      const resp = await fetch('/api/digest-from-links', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ topic: term, links: finalLinks, style }) });
+      const data = await resp.json();
+      if (!resp.ok) {
+        setError(data && data.error ? data.error : 'Digest failed');
+        setLoading(false);
+        return;
+      }
+      // show summary_md in digest area
+      setDigest([{ term: data.topic, style: data.style, summary_md: data.summary_md, summary: data.summary_md }]);
+    } catch (e) {
+      console.error(e);
+      setError('Digest request failed');
+    } finally { setLoading(false); }
+  };
+
+  // minimal markdown renderer for returned summary_md (convert headings, bullets, links)
+  const renderMarkdown = (md) => {
+    if (!md) return null;
+    // simple transforms: headings and bullets and links
+    const html = md
+      .replace(/^###?\s*(.*)$/gm, '<strong>$1</strong>')
+      .replace(/^##\s*(.*)$/gm, '<h4>$1</h4>')
+      .replace(/^\-\s+(.*)$/gm, '<li>$1</li>')
+      .replace(/\n{2,}/g, '<br/><br/>')
+      .replace(/\[(.*?)\]\((.*?)\)/g, '<a href="$2" target="_blank" rel="noreferrer">$1</a>');
+    // wrap isolated <li> into <ul>
+  const withUl = html.replace(/((?:<li>[\s\S]*?<\/li>\s*)+)/g, (m) => `<ul>${m}</ul>`);
+    return { __html: withUl };
+  };
+
   return (
     <div style={{ minHeight: '100vh', paddingBottom: '200px' }}>
+      {!aiAvailable && (
+        <div style={{ background: '#fff4e5', border: '1px solid #ffd89b', padding: '0.75rem 1rem', textAlign: 'center' }}>
+          <strong>AI not configured</strong> — OpenAI key not detected by the server. To enable AI digests, add your OPENAI_API_KEY to <code>/server/.env</code> and restart the server.
+        </div>
+      )}
       <form onSubmit={handleSearch} style={{ display: 'flex', justifyContent: 'center', margin: '2rem 0' }}>
         <input
           type="text"
@@ -170,7 +310,7 @@ export default function Home() {
           {digest.map((d, i) => (
             <div key={i} style={{ marginBottom: '0.5rem' }}>
               <strong style={{ display: 'block' }}>{d.term}</strong>
-              <div style={{ color: '#222' }}>{d.summary}</div>
+              <div style={{ color: '#222' }} dangerouslySetInnerHTML={renderMarkdown(d.summary_md || d.summary || '')}></div>
             </div>
           ))}
         </div>
@@ -234,16 +374,26 @@ export default function Home() {
         <div style={{ padding: '1rem 2rem' }}>
           <h4>Grouped Results</h4>
           <div style={{ display: 'flex', gap: '1rem', alignItems: 'flex-start' }}>
-            <div style={{ flex: 1 }}>
+              <div style={{ flex: 1 }}>
               <h5>NewsAPI</h5>
               {Object.keys(grouped.newsapi || {}).map(k => (
                 <div key={k} style={{ marginBottom: '1rem' }}>
                   <strong>{k}</strong>
-                  <ul>
+                  <div style={{ marginTop: '0.5rem' }}>
+                    <button type="button" onClick={() => selectTop5ForTerm(k)} style={{ marginBottom: '0.5rem' }}>Select top 5</button>
+                    <ul style={{ listStyle: 'none', padding: 0 }}>
                     {(grouped.newsapi[k] || []).slice(0,5).map((it, i) => (
-                      <li key={i}><a href={it.url} target="_blank" rel="noreferrer">{it.title}</a></li>
+                      <li key={i} style={{ marginBottom: '0.5rem' }}>
+                        <label>
+                          <input type="checkbox" checked={selectedLinks[k] && selectedLinks[k][it.url]} onChange={() => toggleSelect(k, it.url)} />
+                          {' '}
+                          <a href={it.url} target="_blank" rel="noreferrer">{it.title}</a>
+                        </label>
+                      </li>
                     ))}
-                  </ul>
+                    </ul>
+                    <div><button onClick={() => buildDigestFromSelected(k, undefined)}>Build Digest from selected</button></div>
+                  </div>
                 </div>
               ))}
             </div>
@@ -252,11 +402,21 @@ export default function Home() {
               {Object.keys(grouped.google || {}).map(k => (
                 <div key={k} style={{ marginBottom: '1rem' }}>
                   <strong>{k}</strong>
-                  <ul>
+                  <div style={{ marginTop: '0.5rem' }}>
+                    <button type="button" onClick={() => selectTop5ForTerm(k)} style={{ marginBottom: '0.5rem' }}>Select top 5</button>
+                    <ul style={{ listStyle: 'none', padding: 0 }}>
                     {(grouped.google[k] || []).slice(0,5).map((it, i) => (
-                      <li key={i}><a href={it.url} target="_blank" rel="noreferrer">{it.title}</a></li>
+                      <li key={i} style={{ marginBottom: '0.5rem' }}>
+                        <label>
+                          <input type="checkbox" checked={selectedLinks[k] && selectedLinks[k][it.url]} onChange={() => toggleSelect(k, it.url)} />
+                          {' '}
+                          <a href={it.url} target="_blank" rel="noreferrer">{it.title}</a>
+                        </label>
+                      </li>
                     ))}
-                  </ul>
+                    </ul>
+                    <div><button onClick={() => buildDigestFromSelected(k, undefined)}>Build Digest from selected</button></div>
+                  </div>
                 </div>
               ))}
             </div>
