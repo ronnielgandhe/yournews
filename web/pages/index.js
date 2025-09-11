@@ -15,7 +15,7 @@ export default function Home() {
 		setError('');
 		setShowPanel(false);
 		try {
-			const res = await fetch(`http://localhost:3001/search?q=${encodeURIComponent(searchTerm)}`);
+			const res = await fetch(`/api/search?q=${encodeURIComponent(searchTerm)}`);
 			if (!res.ok) throw new Error('Failed to fetch');
 			const data = await res.json();
 			setResults(data.articles || []);

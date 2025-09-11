@@ -2,10 +2,16 @@
 require('dotenv').config();
 const express = require('express');
 const cors = require('cors');
-const fetch = require('node-fetch');
+// Use global fetch (Node 18+) when available, otherwise lazily load node-fetch
+const fetch = globalThis.fetch
+  ? globalThis.fetch.bind(globalThis)
+  : async (...args) => {
+      const mod = await import('node-fetch');
+      return mod.default(...args);
+    };
 
 const app = express();
-const port = process.env.PORT || 3001;
+const port = process.env.PORT || 8000;
 
 // Hardcoded NewsAPI key
 const NEWSAPI_KEY = "82e28d486ce646df892eb56db113cd4d";
@@ -29,12 +35,15 @@ app.get('/search', async (req, res) => {
     return res.status(400).json({ error: 'Missing q parameter' });
   }
   try {
-    const url = `https://newsapi.org/v2/everything?q=${encodeURIComponent(q)}&sources=reuters&sortBy=publishedAt&pageSize=20&language=en&apiKey=${NEWSAPI_KEY}`;
-    const response = await fetch(url);
+  // Broaden the query by removing the sources filter (was limiting results)
+  const url = `https://newsapi.org/v2/everything?q=${encodeURIComponent(q)}&sortBy=publishedAt&pageSize=20&language=en&apiKey=${NEWSAPI_KEY}`;
+  const response = await fetch(url);
     if (!response.ok) {
       return res.status(500).json({ error: 'Failed to fetch from NewsAPI' });
     }
     const data = await response.json();
+  // Debug: log the raw response from NewsAPI to help diagnose empty results
+  console.log('NewsAPI response status:', data.status, 'totalResults:', data.totalResults);
     const articles = (data.articles || []).map(a => ({
       title: a.title,
       url: a.url,
