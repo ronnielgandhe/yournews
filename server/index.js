@@ -15,60 +15,10 @@ const fetch = globalThis.fetch
 const app = express();
 const port = process.env.PORT || 8000;
 
-// Hardcoded NewsAPI key
-const NEWSAPI_KEY = "82e28d486ce646df892eb56db113cd4d";
+// Using Google News RSS as the single news source. NewsAPI removed.
 
-app.use(cors());
-app.use(express.json());
+// (duplicate simple extractor removed — improved extractor remains below)
 
-// --- health
-app.get('/health', (_req, res) => {
-  res.json({ status: 'OK', timestamp: new Date().toISOString() });
-});
-
-app.listen(port, () => {
-  console.log(`API server listening on port ${port}`);
-  try {
-    const ok = !!process.env.OPENAI_API_KEY;
-    const nkey = !!NEWSAPI_KEY;
-    console.log('Startup keys: OPENAI_API_KEY present=', ok, ' NEWSAPI_KEY present=', nkey);
-    if (ok) {
-      const k = process.env.OPENAI_API_KEY || '';
-      console.log('OPENAI_API_KEY length=', k.length, 'prefix=', k.slice(0,4) + '...');
-    }
-  } catch (e) {
-    console.log('Error reading env at startup', e && e.message);
-  }
-});
-
-// --- /search?q=TERM
-app.get('/search', async (req, res) => {
-  const q = req.query.q;
-  if (!q) {
-    return res.status(400).json({ error: 'Missing q parameter' });
-  }
-  try {
-  // Broaden the query by removing the sources filter (was limiting results)
-  const url = `https://newsapi.org/v2/everything?q=${encodeURIComponent(q)}&sortBy=publishedAt&pageSize=20&language=en&apiKey=${NEWSAPI_KEY}`;
-  const response = await fetch(url);
-    if (!response.ok) {
-      return res.status(500).json({ error: 'Failed to fetch from NewsAPI' });
-    }
-    const data = await response.json();
-  // Debug: log the raw response from NewsAPI to help diagnose empty results
-  console.log('NewsAPI response status:', data.status, 'totalResults:', data.totalResults);
-    const articles = (data.articles || []).map(a => ({
-      title: a.title,
-      url: a.url,
-      source: a.source && a.source.name ? a.source.name : '',
-      publishedAt: a.publishedAt
-    }));
-    res.json({ articles });
-  } catch (e) {
-    console.error('Error in /search:', e);
-    res.status(500).json({ error: 'Failed to fetch news' });
-  }
-});
 
 // --- helper: normalize rss item
 function normalizeRssItem(it) {
@@ -81,69 +31,54 @@ function normalizeRssItem(it) {
   };
 }
 
-// --- /search/all?q=TERM  (returns { newsapi: [...], google: [...] })
+// helper: fetch Google News RSS for a query
+async function fetchGoogleForQuery(q, pageSize = 10) {
+  const url = `https://news.google.com/rss/search?q=${encodeURIComponent(q)}&hl=en-US&gl=US&ceid=US:en`;
+  const feed = await parser.parseURL(url);
+  const items = (feed && feed.items) ? feed.items.map(normalizeRssItem).slice(0, pageSize) : [];
+  return items;
+}
+
+// --- /search/all?q=TERM  (returns { newsapi: [], google: [...] })
 app.get('/search/all', async (req, res) => {
   const q = req.query.q;
   if (!q) return res.status(400).json({ error: 'Missing q parameter' });
   try {
-    // NewsAPI
-    const newsUrl = `https://newsapi.org/v2/everything?q=${encodeURIComponent(q)}&sortBy=publishedAt&pageSize=10&language=en&apiKey=${NEWSAPI_KEY}`;
-    const newsResp = await fetch(newsUrl);
-    const newsJson = newsResp.ok ? await newsResp.json() : { articles: [] };
-    const newsArticles = (newsJson.articles || []).map(a => ({ title: a.title, url: a.url, source: a.source && a.source.name ? a.source.name : '', publishedAt: a.publishedAt }));
-
-    // Google RSS
-    const gUrl = `https://news.google.com/rss/search?q=${encodeURIComponent(q)}&hl=en-US&gl=US&ceid=US:en`;
-    let googleItems = [];
-    try {
-      const feed = await parser.parseURL(gUrl);
-      googleItems = (feed.items || []).slice(0, 10).map(normalizeRssItem);
-    } catch (e) {
-      console.warn('Google RSS parse failed', e && e.message);
-      googleItems = [];
-    }
-
-    res.json({ newsapi: newsArticles, google: googleItems });
+    const googleArticles = await fetchGoogleForQuery(q, 10);
+    return res.json({ newsapi: [], google: googleArticles });
   } catch (e) {
     console.error('Error in /search/all:', e);
-    res.status(500).json({ error: 'Failed to fetch combined news' });
+    res.status(500).json({ error: 'Failed to fetch results' });
   }
 });
 
-// --- /search/grouped?terms=one,two,three
+// --- /search/grouped?terms=a,b,c  returns { newsapi: {term: []}, google: {term: [...]}}
 app.get('/search/grouped', async (req, res) => {
-  const termsRaw = req.query.terms || req.query.q || '';
-  if (!termsRaw) return res.status(400).json({ error: 'Missing terms parameter' });
-  const terms = String(termsRaw).split(',').map(s => s.trim()).filter(Boolean).slice(0, 12);
-  const newsResults = {};
-  const googleResults = {};
   try {
+    let terms = [];
+    if (req.query.terms) {
+      terms = Array.isArray(req.query.terms) ? req.query.terms : String(req.query.terms).split(',').map(s => s.trim()).filter(Boolean);
+    } else if (req.query.q) {
+      terms = [String(req.query.q).trim()];
+    }
+    if (!terms || terms.length === 0) return res.status(400).json({ error: 'Missing terms' });
+
+    const newsResults = {};
+    const googleResults = {};
+
     await Promise.all(terms.map(async (t) => {
-      // NewsAPI per term
       try {
-        const url = `https://newsapi.org/v2/everything?q=${encodeURIComponent(t)}&sortBy=publishedAt&pageSize=5&language=en&apiKey=${NEWSAPI_KEY}`;
-        const r = await fetch(url);
-        if (r.ok) {
-          const j = await r.json();
-          newsResults[t] = (j.articles || []).map(a => ({ title: a.title, url: a.url, source: a.source && a.source.name ? a.source.name : '', publishedAt: a.publishedAt }));
-        } else {
-          newsResults[t] = [];
-        }
+        const g = await fetchGoogleForQuery(t, 8);
+        newsResults[t] = [];
+        googleResults[t] = g;
+        console.log('/search/grouped', { term: t, newsapiCount: 0, googleCount: Array.isArray(g) ? g.length : 0 });
       } catch (e) {
         newsResults[t] = [];
-      }
-
-      // Google RSS per term
-      try {
-        const gUrl = `https://news.google.com/rss/search?q=${encodeURIComponent(t)}&hl=en-US&gl=US&ceid=US:en`;
-        const feed = await parser.parseURL(gUrl);
-        googleResults[t] = (feed.items || []).slice(0,5).map(normalizeRssItem);
-      } catch (e) {
         googleResults[t] = [];
       }
     }));
 
-    res.json({ newsapi: newsResults, google: googleResults });
+    return res.json({ newsapi: newsResults, google: googleResults });
   } catch (e) {
     console.error('Error in /search/grouped:', e);
     res.status(500).json({ error: 'Failed to fetch grouped results' });
@@ -155,6 +90,56 @@ app.get('/ai/status', (_req, res) => {
   const openaiKey = !!process.env.OPENAI_API_KEY;
   const newsapiKey = !!NEWSAPI_KEY;
   res.json({ openai: { available: openaiKey, lastError: openaiKey ? null : 'OPENAI_API_KEY missing' }, newsapi: { available: newsapiKey, lastError: newsapiKey ? null : 'NEWSAPI_KEY missing' } });
+});
+
+// --- POST /ai/extract
+app.post('/ai/extract', express.json(), async (req, res) => {
+  const text = String((req.body && req.body.text) || req.query.text || '').trim().slice(0, 500);
+  if (!text) return res.status(400).json({ error: 'Missing text' });
+  const systemPrompt = `You extract search queries from messy user text. Return strict JSON only.\nRules:\n- Pull concise, searchable terms (entities & noun phrases).\n- Detect relationships like "<entity> impact on <topic>" as separate queries.\n- Lowercase, dedupe, ≤8 total.\n- If a term implies a market/ticker (e.g., nvidia), include 'nvda stock' as a term.\nOutput:\n{"primary_terms":[],"relation_queries":[],"separate_terms":[]}`;
+  // Try OpenAI SDK if available and key present
+  if (process.env.OPENAI_API_KEY && OpenAI) {
+    try {
+      console.log('/ai/extract: using OpenAI SDK');
+      const client = new OpenAI.OpenAIApi(new OpenAI.Configuration({ apiKey: process.env.OPENAI_API_KEY }));
+      const model = 'gpt-4o-mini';
+      const messages = [
+        { role: 'system', content: systemPrompt },
+        { role: 'user', content: text }
+      ];
+      const resp = await client.createChatCompletion({ model, messages, temperature: 0.2, max_tokens: 300 });
+      const raw = resp && resp.data && resp.data.choices && resp.data.choices[0] && resp.data.choices[0].message && resp.data.choices[0].message.content;
+      if (raw) {
+        // try to parse JSON blob inside raw
+        const m = raw.match(/\{[\s\S]*\}/);
+        if (m) {
+          try {
+            const parsed = JSON.parse(m[0]);
+            const primary_terms = Array.isArray(parsed.primary_terms) ? parsed.primary_terms.map(s => String(s).toLowerCase().trim()) : [];
+            const relation_queries = Array.isArray(parsed.relation_queries) ? parsed.relation_queries.map(s => String(s).toLowerCase().trim()) : [];
+            const separate_terms = Array.isArray(parsed.separate_terms) ? parsed.separate_terms.map(s => String(s).toLowerCase().trim()) : [];
+            return res.json({ primary_terms, relation_queries, separate_terms });
+          } catch (e) {
+            console.warn('/ai/extract: failed parse json from model reply', e && e.message);
+          }
+        }
+      }
+    } catch (err) {
+      console.warn('/ai/extract: OpenAI SDK error', err && (err.message || err.toString()));
+    }
+  }
+  // Fallback: simple splitter
+  try {
+    const candidates = text.split(/[,&]| and |\s+/).map(s => String(s).trim().toLowerCase()).filter(Boolean);
+    const dedup = [];
+    candidates.forEach(c => { if (!dedup.includes(c) && c.length > 2) dedup.push(c); });
+    const primary = dedup.slice(0, 4);
+    const relation = dedup.slice(4,6);
+    const separate = dedup.slice(6,8);
+    return res.json({ primary_terms: primary, relation_queries: relation, separate_terms: separate });
+  } catch (e) {
+    return res.status(500).json({ error: 'Failed to extract terms' });
+  }
 });
 
 // --- helper: call OpenAI Chat Completions via REST
@@ -190,15 +175,78 @@ async function callOpenAIChat(prompt, system = 'You are a helpful summarization 
   return String(content || '').trim();
 }
 
-// --- simple extractor: split text into frequent words
-app.post('/ai/extract', express.json(), (req, res) => {
-  const text = String((req.body && req.body.text) || req.query.text || '').trim();
-  if (!text) return res.status(400).json({ error: 'Missing text in body' });
-  const words = text.toLowerCase().replace(/[^a-z0-9\s]/g, ' ').split(/\s+/).filter(Boolean);
-  const freq = {};
-  words.forEach(w => { if (w.length > 3) freq[w] = (freq[w] || 0) + 1; });
-  const terms = Object.keys(freq).sort((a,b) => freq[b] - freq[a]).slice(0,8);
-  res.json({ primary_terms: terms.slice(0,4), relation_queries: terms.slice(4,6), separate_terms: terms.slice(6,8), terms });
+// --- improved /ai/extract: filter stopwords, dedupe case-insensitively, limit to 8 terms, and log safe metrics
+app.post('/ai/extract', express.json(), async (req, res) => {
+  const text = String((req.body && req.body.text) || req.query.text || '').trim().slice(0, 500);
+  if (!text) return res.status(400).json({ error: 'Missing text' });
+
+  const stopwords = new Set(['the','is','are','a','an','and','or','but','if','of','in','to','for','on','with','as','by','from','that','this','it','be','was','were','will','would','should','can','could','have','has','had','at','what','which','when','where','how','why','not','no','really','over']);
+
+  const finalize = (arr) => {
+    const seen = new Set();
+    const out = [];
+    for (let s of (arr || [])) {
+      if (!s) continue;
+      s = String(s).toLowerCase().trim();
+      const tokens = s.split(/\s+/).filter(Boolean).filter(tok => !stopwords.has(tok));
+      if (tokens.length === 0) continue;
+      const cand = tokens.join(' ');
+      if (cand.length < 2) continue;
+      if (seen.has(cand)) continue;
+      seen.add(cand);
+      out.push(cand);
+      if (out.length >= 8) break;
+    }
+    return out;
+  };
+
+  // Try OpenAI first (SDK), parse JSON, then finalize
+  if (process.env.OPENAI_API_KEY && OpenAI) {
+    try {
+      console.log('/ai/extract: using OpenAI SDK');
+      const client = new OpenAI.OpenAIApi(new OpenAI.Configuration({ apiKey: process.env.OPENAI_API_KEY }));
+      const model = 'gpt-4o-mini';
+      const systemPrompt = `You extract search queries from messy user text. Return strict JSON only.\nRules:\n- Pull concise, searchable terms (entities & noun phrases).\n- Detect relationships like "<entity> impact on <topic>" as separate queries.\n- Lowercase, dedupe, ≤8 total.\n- If a term implies a market/ticker (e.g., nvidia), include 'nvda stock' as a term.\nOutput:\n{\"primary_terms\":[],\"relation_queries\":[],\"separate_terms\":[]}`;
+      const messages = [ { role: 'system', content: systemPrompt }, { role: 'user', content: text } ];
+      const resp = await client.createChatCompletion({ model, messages, temperature: 0.2, max_tokens: 300 });
+      const raw = resp && resp.data && resp.data.choices && resp.data.choices[0] && resp.data.choices[0].message && resp.data.choices[0].message.content;
+      if (raw) {
+        const m = raw.match(/\{[\s\S]*\}/);
+        if (m) {
+          try {
+            const parsed = JSON.parse(m[0]);
+            const combined = [];
+            if (Array.isArray(parsed.primary_terms)) combined.push(...parsed.primary_terms);
+            if (Array.isArray(parsed.relation_queries)) combined.push(...parsed.relation_queries);
+            if (Array.isArray(parsed.separate_terms)) combined.push(...parsed.separate_terms);
+            const final = finalize(combined);
+            const primary_terms = final.slice(0,4);
+            const relation_queries = final.slice(4,6);
+            const separate_terms = final.slice(6,8);
+            console.log('/ai/extract', { inputLen: text.length, termsCount: final.length });
+            return res.json({ primary_terms, relation_queries, separate_terms });
+          } catch (e) {
+            console.warn('/ai/extract parse failed', e && e.message);
+          }
+        }
+      }
+    } catch (err) {
+      console.warn('/ai/extract: OpenAI SDK error', err && (err.message || err.toString()));
+    }
+  }
+
+  // Fallback local split and finalize
+  try {
+    const candidates = text.split(/[,&]| and |\s+/).map(s => String(s).trim().toLowerCase()).filter(Boolean);
+    const final = finalize(candidates);
+    const primary_terms = final.slice(0,4);
+    const relation_queries = final.slice(4,6);
+    const separate_terms = final.slice(6,8);
+    console.log('/ai/extract', { inputLen: text.length, termsCount: final.length });
+    return res.json({ primary_terms, relation_queries, separate_terms });
+  } catch (e) {
+    return res.status(500).json({ error: 'Failed to extract terms' });
+  }
 });
 
 // --- digest-from-links: local fallback summarizer that fetches titles and returns markdown
@@ -227,7 +275,7 @@ app.post('/ai/digest-from-links', express.json(), async (req, res) => {
           console.log('OpenAI: sending prompt for digest-from-links, topic=', topic, 'style=', style);
           // mask long prompt in logs but show length
           console.log('OpenAI: prompt length=', prompt.length);
-          const reply = await callOpenAIChat(prompt, `You are a news summarizer. When asked for a style, adapt tone succinctly (examples: short, long, ELI5, bullets).`);
+          const reply = await callOpenAIChat(prompt, 'Summarize meaning and impact. Do not copy headlines. Provide concise analysis of what\'s happening and why it matters.');
           console.log('OpenAI: reply length=', reply ? reply.length : 0);
           if (reply && reply.length > 0) {
             console.log('OpenAI: returning AI-generated digest for topic=', topic);
@@ -264,7 +312,8 @@ app.post('/ai/digest', express.json(), (req, res) => {
               const prompt = `Write a digest in markdown for the topic: ${t}. Style: ${style || 'short'}. Include a short lead and 3-6 bullets summarizing these items:\n${listText}`;
               console.log('OpenAI: sending prompt for term=', t, 'style=', style);
               console.log('OpenAI: prompt length=', prompt.length);
-              const reply = await callOpenAIChat(prompt, 'You are a concise news summarizer. Output markdown only.');
+              console.log('/ai/digest', { term: t, itemCount: (items || []).length });
+              const reply = await callOpenAIChat(prompt, 'Summarize meaning and impact. Do not copy headlines. Provide concise analysis of what\'s happening and why it matters.');
               console.log('OpenAI: reply length for term=', t, ':', reply ? reply.length : 0);
               if (reply && reply.length > 0) {
                 console.log('OpenAI: generated digest for term=', t);
