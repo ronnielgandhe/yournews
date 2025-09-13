@@ -4,7 +4,6 @@ import { useEffect } from 'react';
 export default function Home() {
   const [query, setQuery] = useState('');
   const [results, setResults] = useState([]);
-  const [newsapiResults, setNewsapiResults] = useState([]);
   const [googleResults, setGoogleResults] = useState([]);
   const [terms, setTerms] = useState([]);
   const [grouped, setGrouped] = useState(null);
@@ -14,8 +13,7 @@ export default function Home() {
   const [error, setError] = useState('');
   const [showPanel, setShowPanel] = useState(false);
   const [aiAvailable, setAiAvailable] = useState(true);
-  const [newsapiAvailable, setNewsapiAvailable] = useState(true);
-  const [serviceErrors, setServiceErrors] = useState({ openai: null, newsapi: null });
+  const [serviceErrors, setServiceErrors] = useState({ openai: null });
 
   useEffect(() => {
     let mounted = true;
@@ -29,8 +27,7 @@ export default function Home() {
         }
   const d = await r.json();
   setAiAvailable(Boolean(d && d.openai && d.openai.available));
-  setNewsapiAvailable(Boolean(d && d.newsapi && d.newsapi.available));
-  setServiceErrors({ openai: d && d.openai ? d.openai.lastError : null, newsapi: d && d.newsapi ? d.newsapi.lastError : null });
+  setServiceErrors({ openai: d && d.openai ? d.openai.lastError : null });
       } catch (e) {
         if (mounted) setAiAvailable(false);
       }
@@ -41,23 +38,58 @@ export default function Home() {
   const handleSearch = async (e) => {
     e.preventDefault();
     if (!query.trim()) return;
+    // New AI-driven search: extract terms then grouped search
     setLoading(true);
     setError('');
     setShowPanel(false);
     try {
-      const res = await fetch(`/api/search-all?q=${encodeURIComponent(query)}`);
-      if (!res.ok) throw new Error('Failed to fetch');
-      const data = await res.json();
-      // `/api/search-all` returns { newsapi: [...], google: [...] }
-      setNewsapiResults(Array.isArray(data.newsapi) ? data.newsapi : []);
-      setGoogleResults(Array.isArray(data.google) ? data.google : []);
-      // also keep combined for any legacy UI
-      setResults([...(Array.isArray(data.newsapi) ? data.newsapi : []), ...(Array.isArray(data.google) ? data.google : [])]);
+      // 1) extract terms from raw query
+      const exRes = await fetch('/api/ai/extract', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ text: query }) });
+      let exData = null;
+      if (exRes.ok) {
+        exData = await exRes.json();
+      } else {
+        // fallback: no extraction
+        exData = { primary_terms: [], relation_queries: [], separate_terms: [] };
+      }
+      const prim = Array.isArray(exData.primary_terms) ? exData.primary_terms : [];
+      const rel = Array.isArray(exData.relation_queries) ? exData.relation_queries : [];
+      const sep = Array.isArray(exData.separate_terms) ? exData.separate_terms : [];
+      // merge and dedupe case-insensitively
+      const seen = new Set();
+      const merged = [];
+      for (const t of [...prim, ...rel, ...sep]) {
+        const s = String(t || '').trim();
+        const key = s.toLowerCase();
+        if (!s) continue;
+        if (!seen.has(key)) { seen.add(key); merged.push(s); }
+        if (merged.length >= 8) break;
+      }
+      setTerms(merged);
+      if (!merged || merged.length === 0) {
+        setError('No clear topics found—try adding commas.');
+        setLoading(false);
+        return;
+      }
+      // 2) auto-search grouped by these terms
+      setLoading(true);
+      const q = encodeURIComponent(merged.join(','));
+      const gRes = await fetch(`/api/search/grouped?terms=${q}`);
+      if (!gRes.ok) throw new Error('Grouped search failed');
+      const gData = await gRes.json();
+      setGrouped(gData);
+      // populate results lists using Google RSS only
+      const googleArray = [];
+      if (gData && gData.google) {
+        for (const k of Object.keys(gData.google)) googleArray.push(...(gData.google[k]||[]));
+      }
+      setGoogleResults(googleArray);
+      setResults([...googleArray]);
       setShowPanel(true);
     } catch (err) {
+      console.error(err);
       setError('Error fetching news');
       setResults([]);
-      setNewsapiResults([]);
       setGoogleResults([]);
       setShowPanel(false);
     } finally {
@@ -117,8 +149,8 @@ export default function Home() {
         }
       }
 
-      // If still no terms, try deriving from grouped results or run grouped based on the query
-      if ((!useTerms || useTerms.length === 0) && (!grouped || Object.keys(grouped.newsapi || {}).length === 0 && Object.keys(grouped.google || {}).length === 0)) {
+  // If still no terms, try deriving from grouped results or run grouped based on the query
+  if ((!useTerms || useTerms.length === 0) && (!grouped || Object.keys(grouped.google || {}).length === 0)) {
         // If extract didn't yield terms, run grouped using the raw query to produce term buckets
         const guess = encodeURIComponent(query || '');
         if (!guess) {
@@ -131,10 +163,9 @@ export default function Home() {
         if (gRes.ok) {
           const gData = await gRes.json();
           setGrouped(gData);
-          // pick keys
-          const newsKeys = gData && gData.newsapi ? Object.keys(gData.newsapi) : [];
+          // pick keys from google
           const googleKeys = gData && gData.google ? Object.keys(gData.google) : [];
-          useTerms = (newsKeys.length ? newsKeys : googleKeys).slice(0, 8);
+          useTerms = googleKeys.slice(0, 8);
           setTerms(useTerms);
         } else {
           console.warn('Grouped fallback failed', gRes.status);
@@ -152,13 +183,12 @@ export default function Home() {
 
       // Build itemsByTerm by merging grouped results if available, otherwise call /search/grouped
       let itemsByTerm = {};
-      if (grouped && (grouped.newsapi || grouped.google)) {
+      if (grouped && grouped.google) {
         for (const t of useTerms) {
-          const n = (grouped.newsapi && grouped.newsapi[t]) || [];
           const g = (grouped.google && grouped.google[t]) || [];
           // merge, dedupe by title
           const seen = new Set();
-          const merged = [...(n || []), ...(g || [])].filter(it => {
+          const merged = [...(g || [])].filter(it => {
             const key = (it.title || '').trim().toLowerCase();
             if (!key || seen.has(key)) return false; seen.add(key); return true;
           }).sort((a,b) => (new Date(b.publishedAt || 0)).getTime() - (new Date(a.publishedAt || 0)).getTime()).slice(0,5);
@@ -171,10 +201,9 @@ export default function Home() {
         if (gRes.ok) {
           const gData = await gRes.json();
           for (const t of useTerms) {
-            const n = (gData.newsapi && gData.newsapi[t]) || [];
             const g = (gData.google && gData.google[t]) || [];
             const seen = new Set();
-            const merged = [...(n || []), ...(g || [])].filter(it => {
+            const merged = [...(g || [])].filter(it => {
               const key = (it.title || '').trim().toLowerCase();
               if (!key || seen.has(key)) return false; seen.add(key); return true;
             }).sort((a,b) => (new Date(b.publishedAt || 0)).getTime() - (new Date(a.publishedAt || 0)).getTime()).slice(0,5);
@@ -221,7 +250,7 @@ export default function Home() {
   };
 
   const selectTop5ForTerm = (term) => {
-    const items = ((grouped && grouped.google && grouped.google[term]) || (grouped && grouped.newsapi && grouped.newsapi[term]) || []).slice(0,5);
+    const items = ((grouped && grouped.google && grouped.google[term]) || []).slice(0,5);
     const mapping = items.reduce((acc, it) => (acc[it.url] = true, acc), {});
     // update UI selection immediately
     setSelectedLinks(prev => ({ ...(prev || {}), [term]: mapping }));
@@ -240,11 +269,10 @@ export default function Home() {
       const linksFromState = selectedLinks[term] ? Object.keys(selectedLinks[term]) : [];
       // use explicit override if provided to avoid race conditions with state
       let finalLinks = Array.isArray(linksOverride) && linksOverride.length > 0 ? linksOverride.slice(0,5) : linksFromState.slice(0,5);
-      // fallback to top 5 google then newsapi if still empty
+      // fallback to top 5 google if still empty
       if (finalLinks.length === 0) {
         const g = (grouped && grouped.google && grouped.google[term]) || [];
-        const n = (grouped && grouped.newsapi && grouped.newsapi[term]) || [];
-        finalLinks = (g.length ? g : n).slice(0,5).map(it => it.url).filter(Boolean);
+        finalLinks = g.slice(0,5).map(it => it.url).filter(Boolean);
       }
       if (finalLinks.length === 0) {
         setError('No links available for digest');
@@ -289,11 +317,7 @@ export default function Home() {
           {serviceErrors.openai && <div style={{ color: '#8b0000', marginTop: '0.25rem' }}>OpenAI: {serviceErrors.openai}</div>}
         </div>
       )}
-      {!newsapiAvailable && (
-        <div style={{ background: '#fff5f5', border: '1px solid #ffcccc', padding: '0.5rem 1rem', textAlign: 'center', marginTop: '0.5rem' }}>
-          <strong>NewsAPI unavailable</strong> — NewsAPI key missing or rate-limited. Some results may be missing. {serviceErrors.newsapi && <span style={{ color: '#8b0000' }}>{serviceErrors.newsapi}</span>}
-        </div>
-      )}
+  {/* NewsAPI removed: UI uses Google RSS only */}
       <form onSubmit={handleSearch} style={{ display: 'flex', justifyContent: 'center', margin: '2rem 0' }}>
         <input
           type="text"
@@ -313,6 +337,7 @@ export default function Home() {
           Extract
         </button>
       </form>
+  <div style={{ textAlign: 'center', color: '#666', fontSize: '0.95rem', marginTop: '-0.5rem' }}>Tip: ask in plain English — we'll extract topics for you (e.g., "is cost of living rising in canada; what's going on in nepal?").</div>
       {/* Inline digest under the search bar for immediate visibility */}
       {digest && (
         <div style={{ maxWidth: '760px', margin: '0 auto 1rem', padding: '0.75rem 1rem', border: '1px solid #e6f0fb', background: '#f5fbff', borderRadius: '6px' }}>
@@ -340,47 +365,71 @@ export default function Home() {
           background: '#fff',
           borderTop: '2px solid #007acc',
           boxShadow: '0 -2px 12px rgba(0,0,0,0.08)',
-          maxHeight: '40vh',
+          maxHeight: '50vh',
           overflowY: 'auto',
           zIndex: 1000,
           padding: '1.5rem 2rem',
         }}>
           <h3 style={{ margin: 0, marginBottom: '1rem', color: '#007acc' }}>Headlines</h3>
           {results.length === 0 && <div>No results found.</div>}
-          <ul style={{ listStyle: 'none', padding: 0, margin: 0 }}>
-            {results.map((a, i) => (
-              <li key={i} style={{ marginBottom: '1.5rem' }}>
-                <div style={{ fontSize: '0.95rem', color: '#666', marginBottom: '0.2rem' }}>
-                  {a.source} &bull; {a.publishedAt ? new Date(a.publishedAt).toLocaleString() : ''}
+
+          {/* AI Flow chips */}
+          <div style={{ marginBottom: '1rem' }}>
+            <strong>AI Flow:</strong>
+            <div style={{ marginTop: '0.5rem' }}>{terms && terms.map((t, i) => (
+              <span key={i} style={{ display: 'inline-block', marginRight: '0.5rem', marginBottom: '0.5rem', padding: '0.25rem 0.5rem', border: '1px solid #ddd', borderRadius: '16px' }}>{t}</span>
+            ))}</div>
+          </div>
+
+          {/* Controls */}
+          <div style={{ display: 'flex', gap: '0.5rem', alignItems: 'center', marginBottom: '1rem' }}>
+            <button type="button" onClick={handleGrouped} style={{ fontSize: '0.95rem', padding: '0.4rem 0.8rem', borderRadius: '4px', border: 'none', background: '#007acc', color: 'white' }}>Search grouped</button>
+            <label style={{ display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
+              Style:
+              <select value={style} onChange={e => setStyle(e.target.value)} style={{ padding: '0.25rem' }}>
+                <option value="short">Short</option>
+                <option value="long">Long</option>
+                <option value="eli5">ELI5</option>
+                <option value="bullets">Bullets</option>
+              </select>
+            </label>
+            <button type="button" onClick={buildDigest} style={{ fontSize: '0.95rem', padding: '0.4rem 0.8rem', borderRadius: '4px', border: '1px solid #333', background: '#fff' }}>Build Digest</button>
+          </div>
+
+          {/* Grouped per-term collapsible panels (default collapsed) */}
+          <div>
+            {terms && terms.map((t, i) => {
+              const gArr = (grouped && grouped.google && grouped.google[t]) || [];
+              const count = (gArr || []).length;
+              const collapsed = !(selectedLinks && selectedLinks[t]);
+              return (
+                <div key={t} style={{ marginBottom: '1rem', borderBottom: '1px solid #f0f0f0', paddingBottom: '0.75rem' }}>
+                  <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                    <div style={{ fontWeight: 600 }}>{t}</div>
+                    <div style={{ display: 'flex', gap: '0.5rem', alignItems: 'center' }}>
+                      <div style={{ background: '#eef6ff', padding: '0.15rem 0.5rem', borderRadius: '12px', fontSize: '0.85rem' }}>{count} links</div>
+                      <button onClick={() => setSelectedLinks(prev => ({ ...(prev||{}), [t]: prev && prev[t] ? null : {} }))} style={{ padding: '0.25rem 0.5rem' }}>{(selectedLinks && selectedLinks[t]) ? 'Hide links' : 'Show links'}</button>
+                    </div>
+                  </div>
+                  {(selectedLinks && selectedLinks[t]) && (
+                    <div style={{ marginTop: '0.5rem' }}>
+                      <button onClick={() => selectTop5ForTerm(t)} style={{ marginBottom: '0.5rem' }}>Select top 5</button>
+                      <ul style={{ listStyle: 'none', padding: 0 }}>
+                        {gArr.slice(0,8).map((it, idx) => (
+                          <li key={idx} style={{ marginBottom: '0.5rem' }}>
+                            <label>
+                              <input type="checkbox" checked={selectedLinks[t] && selectedLinks[t][it.url]} onChange={() => toggleSelect(t, it.url)} />{' '}
+                              <a href={it.url} target="_blank" rel="noreferrer">{it.title}</a>
+                            </label>
+                          </li>
+                        ))}
+                      </ul>
+                      <div><button onClick={() => buildDigestFromSelected(t, undefined)}>Build Digest from selected</button></div>
+                    </div>
+                  )}
                 </div>
-                <div>
-                  <a href={a.url} target="_blank" rel="noopener noreferrer" style={{ fontSize: '1.1rem', color: '#007acc', textDecoration: 'underline' }}>{a.title}</a>
-                </div>
-              </li>
-            ))}
-          </ul>
-          <div style={{ marginTop: '1rem' }}>
-            <div style={{ marginBottom: '0.5rem' }}>
-              <strong>AI Flow:</strong>
-            </div>
-            <div style={{ marginBottom: '0.5rem' }}>
-              {terms && terms.map((t, i) => (
-                <span key={i} style={{ display: 'inline-block', marginRight: '0.5rem', marginBottom: '0.5rem', padding: '0.25rem 0.5rem', border: '1px solid #ddd', borderRadius: '16px' }}>{t}</span>
-              ))}
-            </div>
-            <div style={{ display: 'flex', gap: '0.5rem', alignItems: 'center' }}>
-              <button type="button" onClick={handleGrouped} style={{ fontSize: '0.95rem', padding: '0.4rem 0.8rem', borderRadius: '4px', border: 'none', background: '#007acc', color: 'white' }}>Search grouped</button>
-              <label style={{ display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
-                Style:
-                <select value={style} onChange={e => setStyle(e.target.value)} style={{ padding: '0.25rem' }}>
-                  <option value="short">Short</option>
-                  <option value="long">Long</option>
-                  <option value="eli5">ELI5</option>
-                  <option value="bullets">Bullets</option>
-                </select>
-              </label>
-              <button type="button" onClick={buildDigest} style={{ fontSize: '0.95rem', padding: '0.4rem 0.8rem', borderRadius: '4px', border: '1px solid #333', background: '#fff' }}>Build Digest</button>
-            </div>
+              );
+            })}
           </div>
         </div>
       )}
@@ -389,29 +438,6 @@ export default function Home() {
         <div style={{ padding: '1rem 2rem' }}>
           <h4>Grouped Results</h4>
           <div style={{ display: 'flex', gap: '1rem', alignItems: 'flex-start' }}>
-              <div style={{ flex: 1 }}>
-              <h5>NewsAPI</h5>
-              {Object.keys(grouped.newsapi || {}).map(k => (
-                <div key={k} style={{ marginBottom: '1rem' }}>
-                  <strong>{k}</strong>
-                  <div style={{ marginTop: '0.5rem' }}>
-                    <button type="button" onClick={() => selectTop5ForTerm(k)} style={{ marginBottom: '0.5rem' }}>Select top 5</button>
-                    <ul style={{ listStyle: 'none', padding: 0 }}>
-                    {(grouped.newsapi[k] || []).slice(0,5).map((it, i) => (
-                      <li key={i} style={{ marginBottom: '0.5rem' }}>
-                        <label>
-                          <input type="checkbox" checked={selectedLinks[k] && selectedLinks[k][it.url]} onChange={() => toggleSelect(k, it.url)} />
-                          {' '}
-                          <a href={it.url} target="_blank" rel="noreferrer">{it.title}</a>
-                        </label>
-                      </li>
-                    ))}
-                    </ul>
-                    <div><button onClick={() => buildDigestFromSelected(k, undefined)}>Build Digest from selected</button></div>
-                  </div>
-                </div>
-              ))}
-            </div>
             <div style={{ flex: 1 }}>
               <h5>Google</h5>
               {Object.keys(grouped.google || {}).map(k => (
