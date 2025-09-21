@@ -5,8 +5,14 @@ export default async function handler(req, res) {
     const _fetch = globalThis.fetch;
     if (!_fetch) return res.status(500).json({ error: 'Server missing fetch' });
     const resp = await _fetch(url, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(req.body || {}) });
-    const data = await resp.json();
-    res.status(resp.status).json(data);
+    const ct = resp.headers.get('content-type') || '';
+    if (ct.includes('application/json')) {
+      const data = await resp.json();
+      return res.status(resp.status).json(data);
+    }
+    const text = await resp.text();
+    console.error('/api/digest-from-links proxy non-json response length=', String(text || '').slice(0,200));
+    return res.status(resp.status).json({ error: 'Upstream returned non-JSON', body: String(text).slice(0,200) });
   } catch (err) {
     console.error('/api/digest-from-links proxy failed', err);
     res.status(500).json({ error: 'Proxy failed' });

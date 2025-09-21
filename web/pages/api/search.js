@@ -9,8 +9,14 @@ export default async function handler(req, res) {
       return res.status(500).json({ error: 'Server missing fetch implementation' });
     }
     const resp = await _fetch(url);
-    const data = await resp.json();
-    res.status(resp.status).json(data);
+    const ct = resp.headers.get('content-type') || '';
+    if (ct.includes('application/json')) {
+      const data = await resp.json();
+      return res.status(resp.status).json(data);
+    }
+    const text = await resp.text();
+    console.error('Proxy /api/search non-json response length=', String(text || '').slice(0,200));
+    return res.status(resp.status).json({ error: 'Upstream returned non-JSON', body: String(text).slice(0,200) });
   } catch (err) {
     console.error('Proxy /api/search error:', err);
     res.status(500).json({ error: 'Proxy failed' });

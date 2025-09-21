@@ -7,6 +7,12 @@ export default function Home() {
   const [error, setError] = useState('');
   const [digest, setDigest] = useState(null); // { summary_md }
   const [sources, setSources] = useState([]);
+  const [intentTags, setIntentTags] = useState([]);
+  const [timelineData, setTimelineData] = useState(null);
+  const [entitiesData, setEntitiesData] = useState(null);
+  const [summaryLevel, setSummaryLevel] = useState('short'); // short | medium | long
+  const [summaryCache] = useState(() => new Map()); // key: digest_md|level -> summary
+  const summaryLevelsEnabled = (typeof process !== 'undefined' && process.env && process.env.NEXT_PUBLIC_AI_SUMMARY_LEVELS_ENABLED === 'true') || (typeof window !== 'undefined' && (window as any).NEXT_PUBLIC_AI_SUMMARY_LEVELS_ENABLED === 'true');
   const [showSources, setShowSources] = useState(false);
 
   // Render minimal markdown (headings, bullets, links)
@@ -64,15 +70,17 @@ export default function Home() {
         // mdJson: { intentTags: [], sections: [{query, markdown, articles}] }
         const combinedMd = (mdJson.sections || []).map(s => s.markdown || `## ${s.query}`).join('\n\n');
         setDigest({ summary_md: combinedMd });
+        if (mdJson.intentTags) setIntentTags(mdJson.intentTags || []);
+        if (mdJson.timeline) setTimelineData(mdJson.timeline);
+        if (mdJson.entities) setEntitiesData(mdJson.entities);
         // flatten sources grouped by section for the View Sources UI
-        const grouped = [];
+  const grouped = [];
         (mdJson.sections || []).forEach((s) => {
           const urls = (s.articles || []).map(a => a.url).filter(Boolean);
           grouped.push({ label: s.query, urls });
         });
         setSources(grouped);
-        // show tiny chips of intent tags (store in error field temporarily to reuse state shape)
-        if (mdJson.intentTags) setError('tags:' + mdJson.intentTags.join(','));
+      
       } else {
         // 2) request a digest from the server (will use OpenAI if configured, otherwise return local fallback)
         const dRes = await fetch('/api/digest-from-links', {
@@ -132,16 +140,52 @@ export default function Home() {
           <div style={{ border: '1px solid #e6eef9', background: '#f8fbff', padding: '0.85rem', borderRadius: 8, marginBottom: '1rem' }}>
             <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '0.5rem' }}>
               <div style={{ fontSize: '0.95rem', color: '#073b6b' }}><strong>Digest</strong></div>
-              {/* intent tags show as tiny chips when present in error state as 'tags:...' (temporary) */}
-              {error && String(error).startsWith('tags:') && (
+              {/* intent tags show as tiny chips when returned */}
+              {intentTags && intentTags.length > 0 && (
                 <div style={{ display: 'flex', gap: '0.35rem' }}>
-                  {String(error).replace('tags:', '').split(',').map((t, i) => (
+                  {intentTags.map((t, i) => (
                     <span key={i} style={{ background: '#e8f1ff', color: '#063663', padding: '0.15rem 0.45rem', borderRadius: 12, fontSize: '0.75rem' }}>{t}</span>
                   ))}
                 </div>
               )}
             </div>
             <div style={{ color: '#222' }} dangerouslySetInnerHTML={renderMarkdown(digest.summary_md)} />
+
+            {/* Summary level control (short/medium/long) */}
+            {summaryLevelsEnabled && (
+              <div style={{ marginTop: '0.6rem', display: 'flex', gap: '0.5rem', alignItems: 'center' }}>
+                <div style={{ fontSize: '0.85rem', color: '#333' }}>Summary:</div>
+                {['short','medium','long'].map(l => (
+                  <button key={l} onClick={async () => {
+                    try {
+                      setLoading(true);
+                      setError('');
+                      setSummaryLevel(l);
+                      const key = `${digest.summary_md}||${l}`;
+                      if (summaryCache.has(key)) {
+                        setDigest({ summary_md: summaryCache.get(key) });
+                        setLoading(false);
+                        return;
+                      }
+                      const r = await fetch('/api/ai/summarize', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ digestMd: digest.summary_md, level: l }) });
+                      if (!r.ok) {
+                        const txt = await r.text().catch(() => '');
+                        throw new Error('Summarize failed: ' + txt.slice(0,200));
+                      }
+                      const j = await r.json();
+                      if (j && j.summary) {
+                        summaryCache.set(key, j.summary);
+                        setDigest({ summary_md: j.summary });
+                      } else {
+                        throw new Error('Invalid summarize response');
+                      }
+                    } catch (e) {
+                      setError(String(e && e.message ? e.message : e));
+                    } finally { setLoading(false); }
+                  }} style={{ padding: '0.25rem 0.5rem', borderRadius: 6, border: summaryLevel===l ? '1px solid #0b74de' : '1px solid #ddd', background: summaryLevel===l ? '#e8f6ff' : 'white', cursor: 'pointer' }}>{l}</button>
+                ))}
+              </div>
+            )}
           </div>
         )}
 
@@ -152,6 +196,29 @@ export default function Home() {
             </button>
             {showSources && (
               <div style={{ marginTop: '0.5rem' }}>
+                {/* timeline if present */}
+                {timelineData && (
+                  <div style={{ marginBottom: '0.6rem', padding: '0.5rem', background: '#fff', border: '1px solid #eef6ff', borderRadius: 6 }}>
+                    <div style={{ fontSize: '0.85rem', color: '#333', marginBottom: '0.25rem' }}><strong>Timeline</strong></div>
+                    <ol style={{ paddingLeft: '1.1rem', margin: 0 }}>
+                      {(timelineData.items || []).map((it, i) => (
+                        <li key={i} style={{ marginBottom: '0.3rem' }}><strong>{it.date}</strong>: {it.text}</li>
+                      ))}
+                    </ol>
+                  </div>
+                )}
+
+                {/* entities if present */}
+                {entitiesData && entitiesData.length > 0 && (
+                  <div style={{ marginBottom: '0.6rem' }}>
+                    <div style={{ fontSize: '0.85rem', color: '#333', marginBottom: '0.25rem' }}><strong>Entities</strong></div>
+                    <div style={{ display: 'flex', gap: '0.5rem', flexWrap: 'wrap' }}>
+                      {entitiesData.map((e, i) => (
+                        <span key={i} style={{ background: '#fff7e6', color: '#663c00', padding: '0.2rem 0.45rem', borderRadius: 8, fontSize: '0.8rem' }}>{e.name} ({e.type})</span>
+                      ))}
+                    </div>
+                  </div>
+                )}
                 {/* sources may be an array of groups {label, urls} or a flat array of urls */}
                 {Array.isArray(sources) && sources.length > 0 && sources[0] && sources[0].label ? (
                   <div>
