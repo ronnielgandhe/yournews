@@ -53,20 +53,42 @@ export default function Home() {
         return;
       }
 
-      // 2) request a digest from the server (will use OpenAI if configured, otherwise return local fallback)
-  const dRes = await fetch('/api/digest-from-links', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ topic: query.trim(), links: urls, style: 'short' })
-      });
-      if (!dRes.ok) {
-        const txt = await dRes.text();
-        throw new Error('Digest failed: ' + txt.slice(0, 200));
+      // 2) If multi-query AI is enabled client-side, call the multi-digest proxy which will ask AI to split queries
+      const multiEnabled = (typeof process !== 'undefined' && process.env && process.env.NEXT_PUBLIC_AI_MULTI_QUERY_ENABLED === 'true') || (typeof window !== 'undefined' && (window as any).__NEXT_DATA__ && (window as any).__NEXT_DATA__.env && (window as any).__NEXT_DATA__.env.NEXT_PUBLIC_AI_MULTI_QUERY_ENABLED === 'true') || (typeof window !== 'undefined' && (window as any).NEXT_PUBLIC_AI_MULTI_QUERY_ENABLED === 'true');
+      if (multiEnabled) {
+        const mdRes = await fetch('/api/multi-digest', {
+          method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ query: query.trim(), style: 'short' })
+        });
+        if (!mdRes.ok) throw new Error('Multi-digest failed');
+        const mdJson = await mdRes.json();
+        // mdJson: { intentTags: [], sections: [{query, markdown, articles}] }
+        const combinedMd = (mdJson.sections || []).map(s => s.markdown || `## ${s.query}`).join('\n\n');
+        setDigest({ summary_md: combinedMd });
+        // flatten sources grouped by section for the View Sources UI
+        const grouped = [];
+        (mdJson.sections || []).forEach((s) => {
+          const urls = (s.articles || []).map(a => a.url).filter(Boolean);
+          grouped.push({ label: s.query, urls });
+        });
+        setSources(grouped);
+        // show tiny chips of intent tags (store in error field temporarily to reuse state shape)
+        if (mdJson.intentTags) setError('tags:' + mdJson.intentTags.join(','));
+      } else {
+        // 2) request a digest from the server (will use OpenAI if configured, otherwise return local fallback)
+        const dRes = await fetch('/api/digest-from-links', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ topic: query.trim(), links: urls, style: 'short' })
+        });
+        if (!dRes.ok) {
+          const txt = await dRes.text();
+          throw new Error('Digest failed: ' + txt.slice(0, 200));
+        }
+        const dData = await dRes.json();
+        // Keep the raw markdown and the source list for optional viewing
+        setDigest({ summary_md: dData.summary_md || '' });
+        setSources(urls);
       }
-      const dData = await dRes.json();
-      // Keep the raw markdown and the source list for optional viewing
-      setDigest({ summary_md: dData.summary_md || '' });
-      setSources(urls);
     } catch (e) {
       console.error('Build digest error', e);
       setError(String(e && e.message ? e.message : e));
@@ -108,7 +130,17 @@ export default function Home() {
 
         {digest && (
           <div style={{ border: '1px solid #e6eef9', background: '#f8fbff', padding: '0.85rem', borderRadius: 8, marginBottom: '1rem' }}>
-            <div style={{ fontSize: '0.95rem', color: '#073b6b', marginBottom: '0.5rem' }}><strong>Digest</strong></div>
+            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '0.5rem' }}>
+              <div style={{ fontSize: '0.95rem', color: '#073b6b' }}><strong>Digest</strong></div>
+              {/* intent tags show as tiny chips when present in error state as 'tags:...' (temporary) */}
+              {error && String(error).startsWith('tags:') && (
+                <div style={{ display: 'flex', gap: '0.35rem' }}>
+                  {String(error).replace('tags:', '').split(',').map((t, i) => (
+                    <span key={i} style={{ background: '#e8f1ff', color: '#063663', padding: '0.15rem 0.45rem', borderRadius: 12, fontSize: '0.75rem' }}>{t}</span>
+                  ))}
+                </div>
+              )}
+            </div>
             <div style={{ color: '#222' }} dangerouslySetInnerHTML={renderMarkdown(digest.summary_md)} />
           </div>
         )}
@@ -119,13 +151,31 @@ export default function Home() {
               {showSources ? 'Hide Sources' : 'View Sources'}
             </button>
             {showSources && (
-              <ul style={{ marginTop: '0.5rem', paddingLeft: '1.1rem' }}>
-                {sources.map((u, i) => (
-                  <li key={i} style={{ marginBottom: '0.4rem' }}>
-                    <a href={u} target="_blank" rel="noreferrer" style={{ color: '#0b74de' }}>{u}</a>
-                  </li>
-                ))}
-              </ul>
+              <div style={{ marginTop: '0.5rem' }}>
+                {/* sources may be an array of groups {label, urls} or a flat array of urls */}
+                {Array.isArray(sources) && sources.length > 0 && sources[0] && sources[0].label ? (
+                  <div>
+                    {sources.map((g, gi) => (
+                      <div key={gi} style={{ marginBottom: '0.6rem' }}>
+                        <div style={{ fontSize: '0.85rem', color: '#333', marginBottom: '0.2rem' }}><strong>{g.label}</strong></div>
+                        <ul style={{ paddingLeft: '1.1rem' }}>
+                          {(g.urls || []).map((u, i) => (
+                            <li key={i} style={{ marginBottom: '0.35rem' }}><a href={u} target="_blank" rel="noreferrer" style={{ color: '#0b74de' }}>{u}</a></li>
+                          ))}
+                        </ul>
+                      </div>
+                    ))}
+                  </div>
+                ) : (
+                  <ul style={{ marginTop: '0.5rem', paddingLeft: '1.1rem' }}>
+                    {sources.map((u, i) => (
+                      <li key={i} style={{ marginBottom: '0.4rem' }}>
+                        <a href={u} target="_blank" rel="noreferrer" style={{ color: '#0b74de' }}>{u}</a>
+                      </li>
+                    ))}
+                  </ul>
+                )}
+              </div>
             )}
           </div>
         )}

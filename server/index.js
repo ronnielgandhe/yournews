@@ -31,6 +31,14 @@ const port = process.env.PORT || 8000;
 // enable CORS for the web frontend
 app.use(cors());
 
+// Load AI helper (server-friendly)
+let aiHelper = null;
+try {
+  aiHelper = require(path.join(__dirname, '..', 'lib', 'ai.js'));
+} catch (e) {
+  try { aiHelper = require(path.join(__dirname, '..', 'lib', 'ai')); } catch (e2) { aiHelper = null; }
+}
+
 
 // Using Google News RSS as the single news source. NewsAPI removed.
 
@@ -365,5 +373,53 @@ app.post('/ai/digest', express.json(), (req, res) => {
   } catch (e) {
     console.error('Error in /ai/digest:', e);
     res.status(500).json({ error: 'Failed to create digest' });
+  }
+});
+
+// --- /ai/multi-digest: accepts { query } and when AI_MULTI_QUERY_ENABLED=true will
+// ask AI to split the query, fetch results for each, and return a combined markdown digest
+app.post('/ai/multi-digest', express.json(), async (req, res) => {
+  const { query, style } = req.body || {};
+  if (!query || !String(query).trim()) return res.status(400).json({ error: 'Missing query' });
+  const enabled = (process.env.AI_MULTI_QUERY_ENABLED === 'true' || process.env.NEXT_PUBLIC_AI_MULTI_QUERY_ENABLED === 'true');
+  if (!enabled) return res.status(400).json({ error: 'AI_MULTI_QUERY_ENABLED not enabled' });
+  try {
+    // 1) suggest sub-queries
+    const suggest = aiHelper && aiHelper.aiSuggestQueries ? await aiHelper.aiSuggestQueries(String(query)) : { queries: [String(query)], intentTags: [] };
+    const queries = Array.isArray(suggest.queries) && suggest.queries.length ? suggest.queries : [String(query)];
+    const intentTags = Array.isArray(suggest.intentTags) ? suggest.intentTags : [];
+
+    // 2) fetch google items per subquery
+    const itemsByQuery = {};
+    await Promise.all(queries.map(async (q) => {
+      try {
+        const items = await fetchGoogleForQuery(q, 6);
+        itemsByQuery[q] = items.map(normalizeRssItem);
+      } catch (e) {
+        itemsByQuery[q] = [];
+      }
+    }));
+
+    // 3) build digests per query and combine
+    const sections = [];
+    if (aiHelper && aiHelper.aiBuildDigest) {
+      for (const q of queries) {
+        const articles = (itemsByQuery[q] || []).map((it, idx) => ({ id: `${q}-${idx}`, title: it.title || '', url: it.url || '', source: { name: it.source || 'Google News', domain: '' }, publishedAt: it.publishedAt || new Date().toISOString(), summary: it.description || '' }));
+        const md = await aiHelper.aiBuildDigest({ query: q, articles });
+        sections.push({ query: q, markdown: md, articles });
+      }
+    } else {
+      // fallback: simple markdown sections
+      for (const q of queries) {
+        const articles = (itemsByQuery[q] || []).slice(0,5);
+        const md = `## ${q}\n\n` + articles.map(a => `- [${a.title}](${a.url})`).join('\n');
+        sections.push({ query: q, markdown: md, articles });
+      }
+    }
+
+    return res.json({ intentTags, sections });
+  } catch (e) {
+    console.error('Error in /ai/multi-digest:', e);
+    res.status(500).json({ error: 'Failed to build multi digest' });
   }
 });
