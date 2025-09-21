@@ -1,5 +1,18 @@
 
-require('dotenv').config();
+const path = require('path');
+// Load the .env file that lives next to this file (server/.env). This is more robust
+// than the default which looks in the process cwd and can miss the file when the
+// server is started from the repo root or elsewhere.
+require('dotenv').config({ path: path.join(__dirname, '.env') });
+// Safely load the OpenAI SDK if installed. Some environments may not have it
+// or we may want to run without it, so keep a null sentinel.
+let OpenAI = null;
+try {
+  // use require instead of import so this file stays CommonJS-compatible
+  OpenAI = require('openai');
+} catch (err) {
+  OpenAI = null;
+}
 const express = require('express');
 const cors = require('cors');
 const RSSParser = require('rss-parser');
@@ -14,6 +27,10 @@ const fetch = globalThis.fetch
 
 const app = express();
 const port = process.env.PORT || 8000;
+
+// enable CORS for the web frontend
+app.use(cors());
+
 
 // Using Google News RSS as the single news source. NewsAPI removed.
 
@@ -52,6 +69,13 @@ app.get('/search/all', async (req, res) => {
   }
 });
 
+// Start server
+app.listen(port, () => {
+  console.log(`Server listening on port ${port}`);
+  console.log('OPENAI_API_KEY present=', !!process.env.OPENAI_API_KEY);
+  console.log('NEWSAPI_KEY present=', !!process.env.NEWSAPI_KEY);
+});
+
 // --- /search/grouped?terms=a,b,c  returns { newsapi: {term: []}, google: {term: [...]}}
 app.get('/search/grouped', async (req, res) => {
   try {
@@ -88,8 +112,12 @@ app.get('/search/grouped', async (req, res) => {
 // --- AI status and simple local AI fallbacks
 app.get('/ai/status', (_req, res) => {
   const openaiKey = !!process.env.OPENAI_API_KEY;
-  const newsapiKey = !!NEWSAPI_KEY;
-  res.json({ openai: { available: openaiKey, lastError: openaiKey ? null : 'OPENAI_API_KEY missing' }, newsapi: { available: newsapiKey, lastError: newsapiKey ? null : 'NEWSAPI_KEY missing' } });
+  // Fix: check the env var instead of an undefined global
+  const newsapiKey = !!process.env.NEWSAPI_KEY;
+  res.json({
+    openai: { available: openaiKey, lastError: openaiKey ? null : 'OPENAI_API_KEY missing' },
+    newsapi: { available: newsapiKey, lastError: newsapiKey ? null : 'NEWSAPI_KEY missing' }
+  });
 });
 
 // --- POST /ai/extract
