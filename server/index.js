@@ -406,7 +406,7 @@ app.post('/ai/multi-digest', express.json(), async (req, res) => {
       for (const q of queries) {
         const articles = (itemsByQuery[q] || []).map((it, idx) => ({ id: `${q}-${idx}`, title: it.title || '', url: it.url || '', source: { name: it.source || 'Google News', domain: '' }, publishedAt: it.publishedAt || new Date().toISOString(), summary: it.description || '' }));
         const md = await aiHelper.aiBuildDigest({ query: q, articles });
-        sections.push({ query: q, markdown: md, articles });
+  sections.push({ query: q, markdown: md, articles });
       }
     } else {
       // fallback: simple markdown sections
@@ -417,9 +417,76 @@ app.post('/ai/multi-digest', express.json(), async (req, res) => {
       }
     }
 
-    return res.json({ intentTags, sections });
+    // compute entities and timeline if enabled
+    let entities = null;
+    let timeline = null;
+    try {
+      if ((process.env.AI_TIMELINE_ENABLED === 'true' || process.env.NEXT_PUBLIC_AI_TIMELINE_ENABLED === 'true') && aiHelper && aiHelper.aiBuildTimeline) {
+        // combine all articles
+        const allArticles = [];
+        for (const s of sections) allArticles.push(...(s.articles || []));
+        timeline = await aiHelper.aiBuildTimeline(allArticles);
+      }
+      if (aiHelper && aiHelper.aiExtractEntities) {
+        const allArticles = [];
+        for (const s of sections) allArticles.push(...(s.articles || []));
+        entities = await aiHelper.aiExtractEntities(allArticles);
+      }
+    } catch (e) {
+      console.warn('ai extra processing failed (timeline/entities)', e && e.message);
+    }
+
+    return res.json({ intentTags, sections, timeline, entities });
+    // Optionally include timeline and extracted entities if feature flags are enabled
+    // (compute them after sections to avoid slowing main loop when disabled)
   } catch (e) {
     console.error('Error in /ai/multi-digest:', e);
     res.status(500).json({ error: 'Failed to build multi digest' });
+  }
+});
+
+// --- aiSummarize: summarize a digest markdown at a given level
+app.post('/ai/summarize', express.json(), async (req, res) => {
+  const { digestMd, level } = req.body || {};
+  if (!digestMd || !level) return res.status(400).json({ error: 'Missing digestMd or level' });
+  try {
+    if (!(process.env.AI_SUMMARY_LEVELS_ENABLED === 'true' || process.env.NEXT_PUBLIC_AI_SUMMARY_LEVELS_ENABLED === 'true')) {
+      return res.status(400).json({ error: 'AI summary levels not enabled' });
+    }
+
+    // simple in-memory LRU-like cache with TTL
+    if (!global.__aiSummCache) {
+      global.__aiSummCache = new Map(); // key -> { summary, ts }
+      // prune periodically
+      setInterval(() => {
+        const now = Date.now();
+        for (const [k, v] of global.__aiSummCache.entries()) {
+          if (now - v.ts > 1000 * 60 * 60) { // 1 hour TTL
+            global.__aiSummCache.delete(k);
+          }
+        }
+        // cap size at 200 entries
+        if (global.__aiSummCache.size > 200) {
+          const keys = Array.from(global.__aiSummCache.keys()).slice(0, global.__aiSummCache.size - 200);
+          for (const kk of keys) global.__aiSummCache.delete(kk);
+        }
+      }, 1000 * 60 * 5);
+    }
+
+    const key = `lvl:${String(level)}|hash:${require('crypto').createHash('sha256').update(String(digestMd)).digest('hex')}`;
+    const cached = global.__aiSummCache.get(key);
+    if (cached && (Date.now() - cached.ts) < (1000 * 60 * 60)) {
+      return res.json({ summary: cached.summary, cached: true });
+    }
+
+    if (aiHelper && aiHelper.aiSummarizeAtLevel) {
+      const out = await aiHelper.aiSummarizeAtLevel(String(digestMd), String(level));
+      global.__aiSummCache.set(key, { summary: out, ts: Date.now() });
+      return res.json({ summary: out, cached: false });
+    }
+    return res.status(500).json({ error: 'AI summarize helper missing' });
+  } catch (e) {
+    console.error('Error in /ai/summarize:', e);
+    return res.status(500).json({ error: 'Failed to summarize' });
   }
 });

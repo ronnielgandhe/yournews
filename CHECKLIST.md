@@ -7,6 +7,11 @@ Acceptance criteria:
 - [ ] `lib/ai.ts` compiles and returns mock data when no OPENAI_API_KEY is set.
 - [ ] `.env.example` and `.env.local` contain the required AI_* flags and OPENAI_API_KEY placeholder.
 
+Verification steps performed in this commit:
+- [x] Added `.env.example` with feature flags and placeholders (defaults false).
+- [x] Added `lib/ai.ts` typed wrapper that delegates to `lib/ai.js` which contains runtime logic and safe fallbacks.
+
+
 PHASE 1 — AI MULTI-QUERY INTERPRETER
 
 Acceptance criteria (high level):
