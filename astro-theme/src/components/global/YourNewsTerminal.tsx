@@ -381,8 +381,9 @@ export default function YourNewsTerminal() {
             <div className='window-dot yellow' />
             <div className='window-dot green' />
           </div>
+          <div className='flex-1' />
           {apiStatus === 'ok' && (
-            <div className='flex items-center gap-1.5 ml-3'>
+            <div className='flex items-center gap-1.5'>
               <div className='w-2 h-2 rounded-full bg-green-400 animate-pulse' />
               <span className='text-green-400 text-xs font-medium'>Live</span>
             </div>
@@ -563,8 +564,9 @@ function DraggableWindow({ window: win, onClose, onMinimize, onFocus, onMove, on
           />
           <div className='window-dot green' aria-label='Maximize' />
         </div>
+        <div className='flex-1' />
         {win.data && win.data.items.length > 0 && win.data.items[0].timeAgo && (
-          <div className='flex items-center gap-1.5 ml-3'>
+          <div className='flex items-center gap-1.5'>
             <div className='w-2 h-2 rounded-full bg-cyan-400' />
             <span className='text-cyan-400 text-xs font-medium'>{win.data.items[0].timeAgo}</span>
           </div>
