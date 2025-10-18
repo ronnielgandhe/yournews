@@ -60,7 +60,19 @@ export function getRankFocus(name: RankProfileName): RankFocus {
       allowDomains: ['reuters.com', 'bloomberg.com', 'ft.com', 'wsj.com', 'marketwatch.com', 'cnbc.com']
     };
   }
-  // sports, world, default keep empty
+  if (name === 'sports') {
+    return {
+      keywords: ['sports', 'game', 'team', 'player', 'coach', 'season', 'league', 'nfl', 'nba', 'mlb', 'nhl', 'soccer', 'football', 'basketball', 'baseball', 'hockey', 'championship', 'playoff', 'tournament'],
+      allowDomains: ['espn.com', 'si.com', 'bleacherreport.com', 'sports.yahoo.com', 'cbssports.com', 'nfl.com', 'nba.com', 'mlb.com']
+    };
+  }
+  if (name === 'world') {
+    return {
+      keywords: ['international', 'global', 'country', 'nation', 'foreign', 'diplomatic', 'treaty', 'summit', 'conflict', 'war', 'peace', 'united nations', 'embassy', 'minister', 'president', 'prime minister'],
+      allowDomains: ['reuters.com', 'bbc.com', 'apnews.com', 'aljazeera.com', 'dw.com', 'france24.com']
+    };
+  }
+  // default keeps empty
   return { keywords: [], allowDomains: [] };
 }
 
