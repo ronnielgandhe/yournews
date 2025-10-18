@@ -49,9 +49,18 @@ export const POST: APIRoute = async ({ request }) => {
         // 2) Get focus configuration for this profile
         const focus = getRankFocus(profileName);
         
+        // 2.5) Modify search query with profile context if profile is active and not default
+        let searchQuery = topic;
+        if (profileName !== 'default' && focus.keywords.length > 0) {
+          // Add top profile keywords to search query to guide Google News
+          const contextKeywords = focus.keywords.slice(0, 2).join(' OR ');
+          searchQuery = `${topic} (${contextKeywords})`;
+          console.info('[YN api] Enhanced query', { original: topic, enhanced: searchQuery, profile: profileName });
+        }
+        
         // 3) Retrieve from Google News
         const maxLinks = 20;
-        const items = await fetchGoogleNews(topic, maxLinks);
+        const items = await fetchGoogleNews(searchQuery, maxLinks);
         console.info('[YN api] Fetched', { topic, count: items.length });
 
         if (items.length === 0) {
@@ -84,18 +93,22 @@ export const POST: APIRoute = async ({ request }) => {
         let focused = filterByFocus(pool, focus);
         let profileFallback = false;
         
+        // Debug: Log sample titles and focus keywords
         console.info('[YN api] focus', {
           topic,
           profile: profileName,
           total: pool.length,
           hardHits: focused.length,
+          focusKeywords: focus.keywords.slice(0, 5),
+          focusDomains: focus.allowDomains.slice(0, 3),
+          sampleTitles: pool.slice(0, 3).map(i => i.title),
         });
         
-        if (focused.length >= 10) {
-          // Enough results with hard filter
+        if (focused.length >= 3) {
+          // Enough results with hard filter (lowered threshold from 10 to 3)
           pool = focused;
           console.info('[YN api] Using hard filter', { topic, profile: profileName, count: focused.length });
-        } else if (focused.length > 0 && focused.length < 10) {
+        } else if (focused.length > 0 && focused.length < 3) {
           // Some results but not enough - use soft boost instead
           pool = softBoostByFocus(pool, focus);
           profileFallback = true;
