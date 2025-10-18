@@ -402,7 +402,8 @@
 .yn-settings-popover {
   position: absolute;
   top: calc(100% + 8px);
-  right: 0;
+  right: auto;
+  left: 0;
   width: 320px;
   background: rgba(0, 0, 0, 0.85);
   border: 1px solid rgba(255, 255, 255, 0.15);
