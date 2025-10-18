@@ -37,12 +37,13 @@ export default function Desktop({ initialBg, backgroundMap }: AppLayoutProps) {
         <MacToolbar onSettingsClick={() => {}} />
       </div>
 
-      <div className='relative z-0 flex items-center justify-center h-[calc(100vh-10rem)] md:h-[calc(100vh-1.5rem)] pt-6'>
+      <div className='relative z-0 flex items-center justify-center' style={{ height: 'calc(100vh - 1.5rem)' }}>
         <YourNewsTerminal />
       </div>
 
-      <MobileDock />
-      <DesktopDock />
+      {/* Docks hidden for quadrant layout */}
+      {/* <MobileDock /> */}
+      {/* <DesktopDock /> */}
     </div>
   );
 }

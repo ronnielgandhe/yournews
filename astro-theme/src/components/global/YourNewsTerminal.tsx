@@ -1,12 +1,24 @@
 import { useState, useEffect, useRef } from 'react';
 import ReactMarkdown from 'react-markdown';
+import { 
+  computeLayoutRects, 
+  snapToQuadrant, 
+  clampToBounds, 
+  isSmallScreen, 
+  compute2UpLayout,
+  type Quadrant,
+  type Rect
+} from '../../lib/layout';
 
 interface WindowData {
   id: string;
   topic: string;
   x: number;
   y: number;
+  w: number;
+  h: number;
   z: number;
+  quadrant?: Quadrant;
   minimized: boolean;
   loading: boolean;
   error: string | null;
@@ -38,6 +50,103 @@ export default function YourNewsTerminal() {
   const [maxZ, setMaxZ] = useState(1000);
   const [apiStatus, setApiStatus] = useState<'ok' | 'down' | 'unknown'>('unknown');
   const inputRef = useRef<HTMLInputElement>(null);
+  const terminalRef = useRef<HTMLDivElement>(null);
+  
+  // Center rect for main terminal - measured dynamically
+  // Initialize with viewport-centered estimate
+  const centerRectRef = useRef<Rect>({ 
+    x: typeof window !== 'undefined' ? window.innerWidth / 2 - 350 : 400, 
+    y: typeof window !== 'undefined' ? window.innerHeight / 2 - 180 : 200, 
+    w: 700, 
+    h: 360 
+  });
+
+  // Measure main terminal position
+  useEffect(() => {
+    if (!terminalRef.current) return;
+    const updateCenterRect = () => {
+      if (!terminalRef.current) return;
+      const rect = terminalRef.current.getBoundingClientRect();
+      centerRectRef.current = {
+        x: rect.left,
+        y: rect.top,
+        w: rect.width,
+        h: rect.height,
+      };
+      console.info('[YN] Terminal rect updated:', centerRectRef.current);
+      // Reflow windows after terminal position is known
+      if (windows.length > 0) {
+        reflowWindows();
+      }
+    };
+    // Initial measurement after a short delay to ensure layout is complete
+    const timer = setTimeout(updateCenterRect, 100);
+    updateCenterRect();
+    window.addEventListener('resize', updateCenterRect);
+    return () => {
+      clearTimeout(timer);
+      window.removeEventListener('resize', updateCenterRect);
+    };
+  }, []);
+
+  // Reflow windows to quadrants
+  const reflowWindows = () => {
+    const vw = window.innerWidth;
+    const vh = window.innerHeight;
+    const rects = isSmallScreen(vw, vh) 
+      ? compute2UpLayout(vw, vh, centerRectRef.current)
+      : computeLayoutRects(vw, vh, centerRectRef.current);
+
+    console.info('[YN] Reflow layout rects:', {
+      center: centerRectRef.current,
+      TL: rects.TL,
+      TR: rects.TR,
+      BL: rects.BL,
+      BR: rects.BR,
+    });
+
+    setWindows(prev => {
+      return prev.map((win, i) => {
+        const quad = snapToQuadrant(i);
+        let target: Rect;
+
+        if (quad === 'TL') target = rects.TL;
+        else if (quad === 'TR') target = rects.TR;
+        else if (quad === 'BL') target = rects.BL;
+        else if (quad === 'BR') target = rects.BR;
+        else {
+          // OVERFLOW: cascade along bottom
+          const overflowIndex = i - 4;
+          target = {
+            x: rects.OVERFLOW_ORIGIN.x + overflowIndex * 24,
+            y: rects.OVERFLOW_ORIGIN.y + overflowIndex * 8,
+            w: 420,
+            h: 280,
+          };
+        }
+
+        // Preserve user-resized dimensions if they exist, otherwise use target
+        const w = win.w || target.w;
+        const h = win.h || target.h;
+        const clamped = clampToBounds({ x: target.x, y: target.y, w, h }, rects.bounds);
+
+        return {
+          ...win,
+          quadrant: quad,
+          x: clamped.x,
+          y: clamped.y,
+          w: clamped.w,
+          h: clamped.h,
+        };
+      });
+    });
+  };
+
+  // Reflow on window resize
+  useEffect(() => {
+    window.addEventListener('resize', reflowWindows);
+    return () => window.removeEventListener('resize', reflowWindows);
+  }, [windows.length]);
 
   useEffect(() => {
     console.info('[YN] UI mounted');
@@ -78,9 +187,45 @@ export default function YourNewsTerminal() {
   const createPanel = async (topic: string, index: number) => {
     console.info('[YN] spawn', topic);
     const windowId = `${topic}-${Date.now()}-${index}`;
+    
+    // Compute initial layout
+    const vw = window.innerWidth;
+    const vh = window.innerHeight;
+    const rects = isSmallScreen(vw, vh) 
+      ? compute2UpLayout(vw, vh, centerRectRef.current)
+      : computeLayoutRects(vw, vh, centerRectRef.current);
+    
+    const currentIndex = windows.length + index;
+    const quad = snapToQuadrant(currentIndex);
+    let initialRect: Rect;
+
+    if (quad === 'TL') initialRect = rects.TL;
+    else if (quad === 'TR') initialRect = rects.TR;
+    else if (quad === 'BL') initialRect = rects.BL;
+    else if (quad === 'BR') initialRect = rects.BR;
+    else {
+      const overflowIndex = currentIndex - 4;
+      initialRect = {
+        x: rects.OVERFLOW_ORIGIN.x + overflowIndex * 24,
+        y: rects.OVERFLOW_ORIGIN.y + overflowIndex * 8,
+        w: 420,
+        h: 280,
+      };
+    }
+
     setWindows(prev => [...prev, {
-      id: windowId, topic, x: 100 + index * 24, y: 100 + index * 24, z: maxZ + index,
-      minimized: false, loading: true, error: null, data: null
+      id: windowId, 
+      topic, 
+      x: initialRect.x, 
+      y: initialRect.y, 
+      w: initialRect.w,
+      h: initialRect.h,
+      z: maxZ + index,
+      quadrant: quad,
+      minimized: false, 
+      loading: true, 
+      error: null, 
+      data: null
     }]);
     setMaxZ(prev => prev + index + 1);
     try {
@@ -139,7 +284,36 @@ export default function YourNewsTerminal() {
   const closeWindow = (id: string) => setWindows(prev => prev.filter(w => w.id !== id));
   const toggleMinimize = (id: string) => setWindows(prev => prev.map(w => w.id === id ? { ...w, minimized: !w.minimized } : w));
   const bringToFront = (id: string) => { setMaxZ(prev => prev + 1); setWindows(prev => prev.map(w => w.id === id ? { ...w, z: maxZ + 1 } : w)); };
-  const moveWindow = (id: string, dx: number, dy: number) => setWindows(prev => prev.map(w => w.id === id ? { ...w, x: Math.max(0, w.x + dx), y: Math.max(0, w.y + dy) } : w));
+  
+  const moveWindow = (id: string, dx: number, dy: number) => {
+    const vw = window.innerWidth;
+    const vh = window.innerHeight;
+    const rects = isSmallScreen(vw, vh) 
+      ? compute2UpLayout(vw, vh, centerRectRef.current)
+      : computeLayoutRects(vw, vh, centerRectRef.current);
+
+    setWindows(prev => prev.map(w => {
+      if (w.id !== id) return w;
+      const newX = w.x + dx;
+      const newY = w.y + dy;
+      const clamped = clampToBounds({ x: newX, y: newY, w: w.w, h: w.h }, rects.bounds);
+      return { ...w, x: clamped.x, y: clamped.y };
+    }));
+  };
+
+  const resizeWindow = (id: string, newW: number, newH: number) => {
+    const vw = window.innerWidth;
+    const vh = window.innerHeight;
+    const rects = isSmallScreen(vw, vh) 
+      ? compute2UpLayout(vw, vh, centerRectRef.current)
+      : computeLayoutRects(vw, vh, centerRectRef.current);
+
+    setWindows(prev => prev.map(w => {
+      if (w.id !== id) return w;
+      const clamped = clampToBounds({ x: w.x, y: w.y, w: newW, h: newH }, rects.bounds, 360, 220);
+      return { ...w, w: clamped.w, h: clamped.h };
+    }));
+  };
 
   return (
     <>
@@ -148,7 +322,7 @@ export default function YourNewsTerminal() {
           ⚠️ API down
         </div>
       )}
-      <div className='glass-pane rounded-2xl border shadow-lg w-full max-w-4xl mx-4 overflow-hidden'>
+      <div ref={terminalRef} className='glass-pane rounded-2xl border shadow-lg w-full max-w-4xl mx-4 overflow-hidden'>
         <div className='window-titlebar'>
           <div className='window-traffic'>
             <div className='window-dot red' />
@@ -181,7 +355,18 @@ export default function YourNewsTerminal() {
         </div>
       </div>
       <div className='fixed inset-0 pointer-events-none' style={{ zIndex: 999 }}>
-        {windows.map(win => <div key={win.id} className='pointer-events-auto'><DraggableWindow window={win} onClose={closeWindow} onMinimize={toggleMinimize} onFocus={bringToFront} onMove={moveWindow} /></div>)}
+        {windows.map(win => (
+          <div key={win.id} className='pointer-events-auto'>
+            <DraggableWindow 
+              window={win} 
+              onClose={closeWindow} 
+              onMinimize={toggleMinimize} 
+              onFocus={bringToFront} 
+              onMove={moveWindow}
+              onResize={resizeWindow}
+            />
+          </div>
+        ))}
       </div>
     </>
   );
@@ -193,16 +378,27 @@ interface DraggableWindowProps {
   onMinimize: (id: string) => void;
   onFocus: (id: string) => void;
   onMove: (id: string, dx: number, dy: number) => void;
+  onResize: (id: string, newW: number, newH: number) => void;
 }
 
-function DraggableWindow({ window: win, onClose, onMinimize, onFocus, onMove }: DraggableWindowProps) {
+function DraggableWindow({ window: win, onClose, onMinimize, onFocus, onMove, onResize }: DraggableWindowProps) {
   const [isDragging, setIsDragging] = useState(false);
+  const [isResizing, setIsResizing] = useState(false);
   const [dragStart, setDragStart] = useState({ x: 0, y: 0 });
+  const [resizeStart, setResizeStart] = useState({ x: 0, y: 0, w: 0, h: 0 });
   
   const handleMouseDown = (e: React.MouseEvent) => {
     setIsDragging(true);
     setDragStart({ x: e.clientX, y: e.clientY });
     onFocus(win.id);
+  };
+
+  const handleResizeStart = (e: React.MouseEvent) => {
+    e.stopPropagation();
+    setIsResizing(true);
+    setResizeStart({ x: e.clientX, y: e.clientY, w: win.w, h: win.h });
+    onFocus(win.id);
+    document.body.style.userSelect = 'none';
   };
 
   useEffect(() => {
@@ -220,12 +416,40 @@ function DraggableWindow({ window: win, onClose, onMinimize, onFocus, onMove }: 
     };
   }, [isDragging, dragStart, win.id, onMove]);
 
+  useEffect(() => {
+    if (!isResizing) return;
+    const handleMouseMove = (e: MouseEvent) => {
+      const newW = Math.max(360, resizeStart.w + (e.clientX - resizeStart.x));
+      const newH = Math.max(220, resizeStart.h + (e.clientY - resizeStart.y));
+      onResize(win.id, newW, newH);
+    };
+    const handleMouseUp = () => {
+      setIsResizing(false);
+      document.body.style.userSelect = '';
+    };
+    document.addEventListener('mousemove', handleMouseMove);
+    document.addEventListener('mouseup', handleMouseUp);
+    return () => {
+      document.removeEventListener('mousemove', handleMouseMove);
+      document.removeEventListener('mouseup', handleMouseUp);
+      document.body.style.userSelect = '';
+    };
+  }, [isResizing, resizeStart, win.id, onResize]);
+
   if (win.minimized) return null;
+
+  const bodyHeight = win.h - 32; // subtract titlebar height
 
   return (
     <div 
-      className='glass-pane rounded-2xl border shadow-lg fixed overflow-hidden'
-      style={{ left: win.x, top: win.y, zIndex: win.z, width: '600px', maxHeight: '500px' }}
+      className='glass-pane rounded-2xl border shadow-lg'
+      style={{ 
+        left: win.x, 
+        top: win.y, 
+        zIndex: win.z, 
+        width: `${win.w}px`, 
+        height: `${win.h}px`,
+      }}
       onClick={() => onFocus(win.id)}
     >
       <div className='window-titlebar' onMouseDown={handleMouseDown}>
@@ -249,7 +473,7 @@ function DraggableWindow({ window: win, onClose, onMinimize, onFocus, onMove }: 
           </div>
         )}
       </div>
-      <div className='window-body overflow-y-auto text-sm text-white' style={{ maxHeight: '468px' }}>
+      <div className='window-body text-sm text-white' style={{ height: `${bodyHeight}px` }}>
         {win.loading && (
           <div className='flex items-center justify-center py-12'>
             <div className='animate-spin rounded-full h-8 w-8 border-b-2 border-cyan-400' />
@@ -321,6 +545,11 @@ function DraggableWindow({ window: win, onClose, onMinimize, onFocus, onMove }: 
             )}
           </div>
         )}
+        <div 
+          className='yn-resizer' 
+          onMouseDown={handleResizeStart}
+          aria-label='Resize'
+        />
       </div>
     </div>
   );
