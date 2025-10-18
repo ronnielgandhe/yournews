@@ -5,7 +5,7 @@
 
 import type { APIRoute } from 'astro';
 import { fetchGoogleNews } from '../../server/rss';
-import { scoreItems } from '../../server/rank';
+import { rankItems, getRankProfile, type RankProfileName } from '../../server/rank';
 import { buildDigestStructured } from '../../server/digest';
 import { isRecent, timeAgo } from '../../server/time';
 
@@ -20,6 +20,7 @@ export const POST: APIRoute = async ({ request }) => {
     }
 
     const prefs = body.preferences || {};
+    const profileName = (body.profile as RankProfileName) || 'default';
     const raw = body.query.trim();
     const topics = raw
       .split(/,| and /gi)
@@ -31,7 +32,11 @@ export const POST: APIRoute = async ({ request }) => {
     
     for (const topic of topics) {
       try {
-        // 1) Retrieve from Google News
+        // 1) Get ranking profile
+        const rankProfile = getRankProfile(profileName);
+        const hours = rankProfile.windowHours || 72;
+        
+        // 2) Retrieve from Google News
         const maxLinks = prefs?.search?.maxLinks ?? 20;
         const items = await fetchGoogleNews(topic, maxLinks);
         console.info('[YN api] Fetched', { topic, count: items.length });
@@ -42,15 +47,17 @@ export const POST: APIRoute = async ({ request }) => {
             type: 'topic',
             summaryMd: `No recent news found for "${topic}".`,
             insights: [],
+            takeaways: [],
+            actions: [],
+            watch: [],
             tags: [],
             items: [],
-            meta: { usedOpenAI: false, recentWindowHours: 72 }
+            meta: { usedOpenAI: false, recentWindowHours: hours, profile: profileName }
           });
           continue;
         }
 
         // 2) Filter recency
-        const hours = prefs?.search?.timeWindowHours ?? 72;
         const now = Date.now();
         const recent = items.filter(i => {
           const t = i?.pubDate ? Date.parse(i.pubDate) : NaN;
@@ -60,16 +67,14 @@ export const POST: APIRoute = async ({ request }) => {
 
         console.info('[YN api] Filtered', { topic, pool: pool.length, recent: recent.length });
 
-        // 3) Rank
-        const ranked = scoreItems(pool, topic, {
-          search: { timeWindowHours: hours },
-          ranking: {
-            bm25Weight: prefs?.ranking?.bm25Weight ?? 1,
-            recencyAlpha: prefs?.ranking?.recencyAlpha ?? 0.2,
-            perDomainCap: prefs?.ranking?.perDomainCap ?? 2,
-            profileAlpha: 0,
-            dedupeNearDupes: prefs?.ranking?.dedupeNearDupes ?? true,
-          },
+        // 3) Rank with profile
+        const ranked = rankItems(pool, topic, rankProfile);
+
+        console.info('[YN api] ranked', { 
+          topic, 
+          profile: profileName, 
+          pool: pool.length, 
+          top: ranked.length 
         });
 
         // 4) Build digest with structured output
@@ -82,7 +87,10 @@ export const POST: APIRoute = async ({ request }) => {
 
         console.info('[YN api] panel', { 
           topic, 
-          insights: digest.insights?.length, 
+          insights: digest.insights?.length,
+          takeaways: digest.takeaways?.length,
+          actions: digest.actions?.length,
+          watch: digest.watch?.length,
           tags: digest.tags?.length, 
           items: ranked.length,
           usedOpenAI: digest.usedOpenAI 
@@ -95,12 +103,15 @@ export const POST: APIRoute = async ({ request }) => {
           type: 'topic',
           summaryMd: digest.summaryMd,
           insights: digest.insights || [],
+          takeaways: digest.takeaways || [],
+          actions: digest.actions || [],
+          watch: digest.watch || [],
           tags: digest.tags || [],
           items: ranked.slice(0, showN).map((item: any) => ({
             ...item,
             timeAgo: timeAgo(item.pubDate),
           })),
-          meta: { usedOpenAI: digest.usedOpenAI, recentWindowHours: hours }
+          meta: { usedOpenAI: digest.usedOpenAI, recentWindowHours: hours, profile: profileName }
         });
       } catch (err: any) {
         console.error('[YN api] panel error', topic, err?.message || err);
@@ -109,9 +120,12 @@ export const POST: APIRoute = async ({ request }) => {
           type: 'topic',
           summaryMd: `Error: ${err?.message || 'Failed to fetch'}`,
           insights: [],
+          takeaways: [],
+          actions: [],
+          watch: [],
           tags: [],
           items: [],
-          meta: { usedOpenAI: false, recentWindowHours: 72 }
+          meta: { usedOpenAI: false, recentWindowHours: 72, profile: profileName }
         });
       }
     }

@@ -1,8 +1,19 @@
 /**
- * Ranking and scoring logic for news items
+ * Ranking and scoring logic for news items with profile support
  */
 
 import type { PanelItem } from './rss';
+
+export type RankProfileName = 'default' | 'technology' | 'finance' | 'sports' | 'world' | 'ai';
+
+export interface RankProfile {
+  bm25Weight: number;
+  recencyAlpha: number;
+  perDomainCap: number;
+  sourcePrior: Record<string, number>;
+  dedupeNearDupes: boolean;
+  windowHours?: number;
+}
 
 interface Preferences {
   search: {
@@ -19,6 +30,64 @@ interface Preferences {
 
 interface ScoredItem extends PanelItem {
   score: number;
+}
+
+export function getRankProfile(name: RankProfileName): RankProfile {
+  if (name === 'technology') {
+    return {
+      bm25Weight: 1.2,
+      recencyAlpha: 0.35,
+      perDomainCap: 1,
+      sourcePrior: {
+        'techcrunch.com': 0.30,
+        'theverge.com': 0.25,
+        'wired.com': 0.25,
+        'arstechnica.com': 0.30,
+        'anandtech.com': 0.35,
+      },
+      dedupeNearDupes: true,
+      windowHours: 48,
+    };
+  }
+  if (name === 'finance') {
+    return {
+      bm25Weight: 1.0,
+      recencyAlpha: 0.40,
+      perDomainCap: 1,
+      sourcePrior: {
+        'reuters.com': 0.35,
+        'bloomberg.com': 0.35,
+        'ft.com': 0.40,
+        'wsj.com': 0.30,
+      },
+      dedupeNearDupes: true,
+      windowHours: 36,
+    };
+  }
+  if (name === 'ai') {
+    return {
+      bm25Weight: 1.1,
+      recencyAlpha: 0.30,
+      perDomainCap: 1,
+      sourcePrior: {
+        'semianalysis.com': 0.40,
+        'huggingface.co': 0.25,
+        'arxiv.org': 0.25,
+        'openai.com': 0.20,
+      },
+      dedupeNearDupes: true,
+      windowHours: 72,
+    };
+  }
+  // default profile
+  return {
+    bm25Weight: 1.0,
+    recencyAlpha: 0.22,
+    perDomainCap: 2,
+    sourcePrior: {},
+    dedupeNearDupes: true,
+    windowHours: 48,
+  };
 }
 
 function bm25Score(text: string, query: string): number {
@@ -45,9 +114,9 @@ function recencyBoost(pubDate: string | undefined, windowHours: number, alpha: n
   
   if (ageHours > windowHours) return 0;
   
-  // Linear decay from 1.0 to 0 over the time window
-  const recencyFactor = 1 - (ageHours / windowHours);
-  return alpha * recencyFactor;
+  // Exponential decay
+  const decay = Math.exp(-(ageHours / windowHours));
+  return alpha * decay;
 }
 
 function extractDomain(url: string): string {
@@ -56,25 +125,26 @@ function extractDomain(url: string): string {
     return hostname.replace(/^www\./, '');
   } catch {
     return 'unknown';
-  }
+  };
 }
 
-export function scoreItems(
+export function rankItems(
   items: PanelItem[],
   query: string,
-  prefs: Preferences
+  profile: RankProfile
 ): PanelItem[] {
-  const { ranking, search } = prefs;
+  const windowHours = profile.windowHours || 48;
   
   // Score each item
   const scored: ScoredItem[] = items.map(item => {
-    const textScore = bm25Score(item.title, query) * ranking.bm25Weight;
-    const recency = recencyBoost(item.pubDate, search.timeWindowHours, ranking.recencyAlpha);
-    const profileScore = 0; // Stub for now
+    const textScore = bm25Score(item.title, query) * profile.bm25Weight;
+    const recency = recencyBoost(item.pubDate, windowHours, profile.recencyAlpha);
+    const domain = extractDomain(item.url);
+    const sourcePriorBoost = profile.sourcePrior[domain] || 0;
     
     return {
       ...item,
-      score: textScore + recency + profileScore,
+      score: textScore + recency + sourcePriorBoost,
     };
   });
 
@@ -86,17 +156,17 @@ export function scoreItems(
   const capped: PanelItem[] = [];
 
   for (const item of scored) {
-    const domain = item.source || extractDomain(item.url);
+    const domain = extractDomain(item.url);
     const count = domainCounts.get(domain) || 0;
 
-    if (count < ranking.perDomainCap) {
+    if (count < profile.perDomainCap) {
       capped.push(item);
       domainCounts.set(domain, count + 1);
     }
   }
 
   // Dedupe near-duplicates if enabled (simple title similarity)
-  if (ranking.dedupeNearDupes) {
+  if (profile.dedupeNearDupes) {
     const unique: PanelItem[] = [];
     const seen = new Set<string>();
 
@@ -110,8 +180,8 @@ export function scoreItems(
       }
     }
 
-    return unique;
+    return unique.slice(0, 20);
   }
 
-  return capped;
+  return capped.slice(0, 20);
 }

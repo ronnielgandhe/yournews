@@ -25,6 +25,9 @@ interface WindowData {
   data: {
     summaryMd: string;
     insights: string[];
+    takeaways?: string[];
+    actions?: string[];
+    watch?: string[];
     tags: string[];
     items: Array<{
       title: string;
@@ -52,12 +55,33 @@ export default function YourNewsTerminal() {
   const inputRef = useRef<HTMLInputElement>(null);
   const terminalRef = useRef<HTMLDivElement>(null);
 
-  // Current topics for chips (recent + fallback)
-  const fallbackTopics = ["Technology", "AI", "Markets", "Elections", "Sports", "Climate"];
+  // Current topics for chips (trending + recent)
+  const trendingTopics = ["Technology", "AI", "Markets", "Climate", "Security", "Product"];
   const recentQueries = typeof localStorage !== 'undefined' 
     ? JSON.parse(localStorage.getItem("yn_recentQueries") || "[]") 
     : [];
-  const currentTopics = Array.from(new Set([...recentQueries, ...fallbackTopics])).slice(0, 8);
+
+  // Map topic to chip color class
+  function chipClassFor(topic: string): string {
+    const t = topic.toLowerCase();
+    if (['learning', 'technology', 'climate', 'security', 'product'].some(k => t.includes(k))) {
+      return 'yn-chip yn-chip--green';
+    }
+    if (['ai', 'science', 'space', 'data'].some(k => t.includes(k))) {
+      return 'yn-chip yn-chip--blue';
+    }
+    return 'yn-chip yn-chip--violet';
+  }
+
+  // Map topic to ranking profile
+  type RankProfileName = 'default' | 'technology' | 'finance' | 'sports' | 'world' | 'ai';
+  function mapTopicToProfile(topic: string): RankProfileName {
+    const s = topic.toLowerCase();
+    if (s.includes('tech') || s.includes('apple') || s.includes('semiconductor')) return 'technology';
+    if (s.includes('market') || s.includes('stocks') || s.includes('fed')) return 'finance';
+    if (s.includes('ai') || s.includes('llm') || s.includes('model')) return 'ai';
+    return 'default';
+  }
   
   // Center rect for main terminal - measured dynamically
   // Initialize with viewport-centered estimate
@@ -187,23 +211,26 @@ export default function YourNewsTerminal() {
     return false;
   };
 
-  const spawnFromRaw = (raw: string) => {
-    console.info('[YN] submit', raw);
+  const spawnFromRaw = (raw: string, options?: { profile?: RankProfileName }) => {
+    console.info('[YN] submit', raw, options);
     const topics = raw.split(/,| and /gi).map(s => s.trim()).filter(Boolean);
     
-    // Save to recent queries in localStorage
-    if (typeof localStorage !== 'undefined') {
+    // Save to recent queries in localStorage (only if not from chip click)
+    if (!options?.profile && typeof localStorage !== 'undefined') {
       const recent = JSON.parse(localStorage.getItem("yn_recentQueries") || "[]");
       const updated = Array.from(new Set([...topics, ...recent])).slice(0, 10);
       localStorage.setItem("yn_recentQueries", JSON.stringify(updated));
     }
     
-    topics.forEach((topic, idx) => createPanel(topic, idx));
+    topics.forEach((topic, idx) => createPanel(topic, idx, options?.profile));
     if (inputRef.current) inputRef.current.value = '';
     setSearchInput('');
   };
 
-  const createPanel = async (topic: string, index: number) => {
+  const createPanel = async (topic: string, index: number, profile?: RankProfileName) => {
+    if (profile) {
+      console.info('[YN] trending chip clicked', topic, profile);
+    }
     console.info('[YN] spawn', topic);
     const windowId = `${topic}-${Date.now()}-${index}`;
     
@@ -248,13 +275,13 @@ export default function YourNewsTerminal() {
     }]);
     setMaxZ(prev => prev + index + 1);
     try {
-      console.info('[YN] Fetching POST /api/search-panels for:', topic);
+      console.info('[YN] Fetching POST /api/search-panels for:', topic, profile ? `profile: ${profile}` : '');
       const controller = new AbortController();
       const timeoutId = setTimeout(() => controller.abort(), 30000);
       const response = await fetch('/api/search-panels', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ query: topic }),
+        body: JSON.stringify({ query: topic, profile }),
         signal: controller.signal,
       });
       clearTimeout(timeoutId);
@@ -276,7 +303,10 @@ export default function YourNewsTerminal() {
       }
       console.info('[YN] panel', { 
         topic, 
-        insights: panel.insights?.length || 0, 
+        insights: panel.insights?.length || 0,
+        takeaways: panel.takeaways?.length || 0,
+        actions: panel.actions?.length || 0,
+        watch: panel.watch?.length || 0,
         tags: panel.tags?.length || 0, 
         items: panel.items.length,
         usedOpenAI: panel.meta?.usedOpenAI 
@@ -287,6 +317,9 @@ export default function YourNewsTerminal() {
         data: {
           summaryMd: panel.summaryMd,
           insights: panel.insights || [],
+          takeaways: panel.takeaways || [],
+          actions: panel.actions || [],
+          watch: panel.watch || [],
           tags: panel.tags || [],
           items: panel.items.slice(0, 7).map((item: any) => ({ ...item, timeAgo: timeAgo(item.pubDate) })),
         }
@@ -374,18 +407,41 @@ export default function YourNewsTerminal() {
               />
             </form>
 
-            <div className='yn-chip-row'>
-              {currentTopics.map(topic => (
-                <button 
-                  key={topic} 
-                  className='yn-chip' 
-                  onClick={() => spawnFromRaw(topic)}
-                  type='button'
-                >
-                  #{topic}
-                </button>
-              ))}
+            {/* Trending row (colored chips) */}
+            <div className='mt-4'>
+              <div className='yn-section-label text-center'>Trending</div>
+              <div className='yn-row justify-center'>
+                {trendingTopics.map(topic => (
+                  <button 
+                    key={topic} 
+                    className={chipClassFor(topic)}
+                    onClick={() => spawnFromRaw(topic, { profile: mapTopicToProfile(topic) })}
+                    type='button'
+                  >
+                    #{topic}
+                  </button>
+                ))}
+              </div>
             </div>
+
+            {/* Recent row (neutral chips) */}
+            {recentQueries.length > 0 && (
+              <div className='mt-3'>
+                <div className='yn-section-label text-center'>Recent</div>
+                <div className='yn-row justify-center'>
+                  {recentQueries.slice(0, 6).map((topic: string) => (
+                    <button 
+                      key={topic} 
+                      className='yn-chip yn-chip--recent'
+                      onClick={() => spawnFromRaw(topic)}
+                      type='button'
+                    >
+                      #{topic}
+                    </button>
+                  ))}
+                </div>
+              </div>
+            )}
 
             {windows.length > 0 && (
               <div className='mt-4 text-gray-400 text-xs text-center'>
@@ -548,6 +604,39 @@ function DraggableWindow({ window: win, onClose, onMinimize, onFocus, onMove, on
                 <ul className='yn-insights-list'>
                   {win.data.insights.slice(0, 5).map((insight, idx) => (
                     <li key={idx}>{insight}</li>
+                  ))}
+                </ul>
+              </section>
+            )}
+
+            {win.data.takeaways && win.data.takeaways.length > 0 && (
+              <section className='yn-insights'>
+                <div className='yn-insights-title'>💡 AI Takeaways</div>
+                <ul className='yn-insights-list'>
+                  {win.data.takeaways.map((takeaway, idx) => (
+                    <li key={idx}>{takeaway}</li>
+                  ))}
+                </ul>
+              </section>
+            )}
+
+            {win.data.actions && win.data.actions.length > 0 && (
+              <section className='yn-insights'>
+                <div className='yn-insights-title'>✅ What you can do</div>
+                <ul className='yn-insights-list'>
+                  {win.data.actions.map((action, idx) => (
+                    <li key={idx}>{action}</li>
+                  ))}
+                </ul>
+              </section>
+            )}
+
+            {win.data.watch && win.data.watch.length > 0 && (
+              <section className='yn-insights'>
+                <div className='yn-insights-title'>👀 Next to watch</div>
+                <ul className='yn-insights-list'>
+                  {win.data.watch.map((item, idx) => (
+                    <li key={idx}>{item}</li>
                   ))}
                 </ul>
               </section>

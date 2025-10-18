@@ -9,6 +9,9 @@ interface DigestResult {
 
 interface StructuredDigestResult {
   insights: string[];
+  takeaways?: string[];
+  actions?: string[];
+  watch?: string[];
   tags: string[];
   summaryMd: string;
   usedOpenAI: boolean;
@@ -44,7 +47,7 @@ export async function buildDigestStructured(
           messages: [
             {
               role: 'system',
-              content: 'You are a news explainer. Given recent article titles and sources, produce a concise, factual digest. Return ONLY valid JSON with these exact keys: "insights" (array of 3-5 short strings, each max 18 words, describing concrete changes), "tags" (array of 3-6 hashtag-style strings like "#Ukraine" or "#ClimatePolicy"), "summaryMd" (markdown string with 3-5 bullets on what changed, then a **Why it matters** section with 1-2 sentences).',
+              content: 'You are a sober news analyst. Be precise, recent, non-hype. No invented facts. Given article titles and sources, write JSON ONLY with keys: insights, takeaways, actions, watch, tags. Insights: concrete changes in last 24-72h (3-6 bullets, 1 sentence each). Takeaways: what it means; who it affects; likely direction (2-4 bullets). Actions: safe, non-financial next steps a reader can do (monitor pages, set alerts, compare metrics, contact reps, prepare docs, etc.) (3-5 bullets). Watch: specific upcoming events or triggers to track (votes, filings, launches, deadlines) (3-5 bullets). Tags: 3-7 hashtags.',
             },
             {
               role: 'user',
@@ -68,22 +71,42 @@ export async function buildDigestStructured(
             
             // Validate and clean the response
             const insights = (Array.isArray(parsed.insights) ? parsed.insights : [])
+              .slice(0, 6)
+              .map((s: any) => String(s).slice(0, 150));
+            
+            const takeaways = (Array.isArray(parsed.takeaways) ? parsed.takeaways : [])
+              .slice(0, 4)
+              .map((s: any) => String(s).slice(0, 200));
+            
+            const actions = (Array.isArray(parsed.actions) ? parsed.actions : [])
+              .slice(0, 5)
+              .map((s: any) => String(s).slice(0, 200));
+            
+            const watch = (Array.isArray(parsed.watch) ? parsed.watch : [])
               .slice(0, 5)
               .map((s: any) => String(s).slice(0, 150));
             
             const tags = (Array.isArray(parsed.tags) ? parsed.tags : [])
-              .slice(0, 6)
+              .slice(0, 7)
               .map((s: any) => {
                 const tag = String(s).slice(0, 24);
                 return tag.startsWith('#') ? tag : `#${tag}`;
               });
             
-            let summaryMd = String(parsed.summaryMd || '').trim();
-            // Strip top-level heading if present
-            summaryMd = summaryMd.replace(/^#\s+[^\n]+\n+/, '');
+            // Build summary from insights
+            const summaryMd = insights.slice(0, 4).map((i: string) => `- ${i}`).join('\n') + 
+              (takeaways.length > 0 ? `\n\n**Why it matters:** ${takeaways[0]}` : '');
             
-            if (insights.length > 0 && summaryMd) {
-              return { insights, tags, summaryMd, usedOpenAI: true };
+            if (insights.length > 0) {
+              return { 
+                insights, 
+                takeaways, 
+                actions, 
+                watch, 
+                tags, 
+                summaryMd, 
+                usedOpenAI: true 
+              };
             }
           } catch (parseError) {
             console.error('[digest] JSON parse error:', parseError);
@@ -182,6 +205,26 @@ function fallbackStructured(titles: { title: string; source?: string }[]): Struc
     .map(t => t.title.slice(0, 100))
     .map(t => t.endsWith('.') ? t : `${t}.`);
 
+  // Generic takeaways
+  const takeaways = [
+    'These developments may impact markets, policies, or public sentiment.',
+    'Key stakeholders should monitor upcoming announcements and reactions.',
+  ];
+
+  // Generic actions
+  const actions = [
+    'Monitor official sources for updates and clarifications.',
+    'Set alerts for related keywords to track developments.',
+    'Compare coverage across multiple reputable outlets.',
+  ];
+
+  // Derive watch items from pubDates (upcoming days)
+  const watch = [
+    'Follow-up announcements expected in 24-48 hours.',
+    'Watch for official statements and regulatory responses.',
+    'Track social media and expert analysis for context.',
+  ];
+
   // Derive tags from sources and capitalized tokens
   const tagSet = new Set<string>();
   
@@ -216,6 +259,9 @@ function fallbackStructured(titles: { title: string; source?: string }[]): Struc
 
   return {
     insights: insights.length > 0 ? insights : ['Recent news updates available.'],
+    takeaways,
+    actions,
+    watch,
     tags: tags.length > 0 ? tags : ['#News'],
     summaryMd,
     usedOpenAI: false,
