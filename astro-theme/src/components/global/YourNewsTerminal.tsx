@@ -24,6 +24,8 @@ interface WindowData {
   loading: boolean;
   error: string | null;
   usedOpenAI?: boolean;
+  activeProfile?: string;
+  profileFallback?: boolean;
   data: {
     summaryMd: string;
     insights: string[];
@@ -227,7 +229,10 @@ export default function YourNewsTerminal() {
     // Load preferences for this search
     const prefs = loadPrefs();
     
-    topics.forEach((topic, idx) => createPanel(topic, idx, options?.profile, prefs));
+    // Use explicit profile if provided, otherwise use defaultProfile from prefs
+    const activeProfile = options?.profile || prefs.defaultProfile;
+    
+    topics.forEach((topic, idx) => createPanel(topic, idx, activeProfile, prefs));
     if (inputRef.current) inputRef.current.value = '';
     setSearchInput('');
   };
@@ -320,6 +325,8 @@ export default function YourNewsTerminal() {
         ...w,
         loading: false,
         usedOpenAI: panel.meta?.usedOpenAI || false,
+        activeProfile: panel.meta?.profile || 'default',
+        profileFallback: panel.meta?.profileFallback || false,
         data: {
           summaryMd: panel.summaryMd,
           insights: panel.insights || [],
@@ -604,6 +611,14 @@ function DraggableWindow({ window: win, onClose, onMinimize, onFocus, onMove, on
           <div className='yn-card'>
             <header className='yn-header'>
               <span className='yn-topic'>{win.topic}</span>
+              {win.activeProfile && win.activeProfile !== 'default' && (
+                <span 
+                  className='yn-chip yn-chip--profile'
+                  title={`Focused on ${win.activeProfile} results${win.profileFallback ? ' (fallback)' : ''}`}
+                >
+                  #{win.activeProfile}{win.profileFallback ? ' (fallback)' : ''}
+                </span>
+              )}
               {win.data.tags && win.data.tags.length > 0 && (
                 <div className='yn-chips'>
                   {win.data.tags.map((tag, idx) => (

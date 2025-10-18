@@ -169,6 +169,14 @@
   font-weight: 500;
 }
 
+.yn-chip--profile {
+  background: rgba(152, 182, 255, 0.15);
+  border-color: rgba(152, 182, 255, 0.35);
+  color: #98B6FF;
+  font-weight: 600;
+  text-transform: capitalize;
+}
+
 .yn-insights {
   margin-top: 6px;
   margin-bottom: 12px;

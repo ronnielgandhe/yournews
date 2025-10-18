@@ -15,6 +15,11 @@ export interface RankProfile {
   windowHours?: number;
 }
 
+export type RankFocus = { 
+  keywords: string[]; 
+  allowDomains: string[] 
+};
+
 interface Preferences {
   search: {
     timeWindowHours: number;
@@ -30,6 +35,82 @@ interface Preferences {
 
 interface ScoredItem extends PanelItem {
   score: number;
+  _focusBonus?: number;
+}
+
+/**
+ * Get focus metadata (keywords + allowed domains) for a profile
+ */
+export function getRankFocus(name: RankProfileName): RankFocus {
+  if (name === 'technology') {
+    return {
+      keywords: ['chip', 'semiconductor', 'iphone', 'android', 'ai', 'software', 'gpu', 'cloud', 'data center', 'app', 'startup', 'tech', 'computing', 'verge', 'crunch'],
+      allowDomains: ['techcrunch.com', 'theverge.com', 'wired.com', 'arstechnica.com', 'anandtech.com', 'tomshardware.com', 'semianalysis.com', '9to5mac.com', 'engadget.com']
+    };
+  }
+  if (name === 'ai') {
+    return {
+      keywords: ['ai', 'llm', 'model', 'gpt', 'agent', 'ml', 'machine learning', 'openai', 'anthropic', 'deepmind', 'hugging face', 'inference', 'training'],
+      allowDomains: ['openai.com', 'anthropic.com', 'huggingface.co', 'deepmind.google', 'semianalysis.com', 'arxiv.org', 'paperswithcode.com']
+    };
+  }
+  if (name === 'finance') {
+    return {
+      keywords: ['markets', 'stocks', 'bond', 'fed', 'inflation', 'earnings', 'ipo', 'm&a', 'commodities', 'economy'],
+      allowDomains: ['reuters.com', 'bloomberg.com', 'ft.com', 'wsj.com', 'marketwatch.com', 'cnbc.com']
+    };
+  }
+  // sports, world, default keep empty
+  return { keywords: [], allowDomains: [] };
+}
+
+/**
+ * Hard filter items by focus keywords and domains
+ * Returns only items matching profile focus
+ */
+export function filterByFocus(items: PanelItem[], focus: RankFocus): PanelItem[] {
+  if (!focus.keywords.length && !focus.allowDomains.length) return items;
+  
+  const kw = new Set(focus.keywords.map(k => k.toLowerCase()));
+  const allowed = new Set(focus.allowDomains);
+  
+  return items.filter(it => {
+    try {
+      const host = new URL(it.url).hostname.replace(/^www\./, '');
+      const title = (it.title || '').toLowerCase();
+      const kwHit = [...kw].some(k => title.includes(k));
+      const domainHit = allowed.has(host);
+      return kwHit || domainHit;
+    } catch {
+      return false;
+    }
+  });
+}
+
+/**
+ * Soft boost items matching focus (doesn't filter, just boosts score)
+ * Used as fallback when hard filter returns too few results
+ */
+export function softBoostByFocus(items: PanelItem[], focus: RankFocus): PanelItem[] {
+  if (!focus.keywords.length && !focus.allowDomains.length) return items;
+  
+  const allowed = new Set(focus.allowDomains);
+  const kw = new Set(focus.keywords.map(k => k.toLowerCase()));
+  
+  return items.map(it => {
+    try {
+      const host = new URL(it.url).hostname.replace(/^www\./, '');
+      const title = (it.title || '').toLowerCase();
+      const kwHit = [...kw].some(k => title.includes(k));
+      const domainHit = allowed.has(host);
+      return { 
+        ...it, 
+        _focusBonus: (kwHit ? 0.25 : 0) + (domainHit ? 0.35 : 0) 
+      };
+    } catch {
+      return { ...it, _focusBonus: 0 };
+    }
+  });
 }
 
 export function getRankProfile(name: RankProfileName): RankProfile {
@@ -141,10 +222,11 @@ export function rankItems(
     const recency = recencyBoost(item.pubDate, windowHours, profile.recencyAlpha);
     const domain = extractDomain(item.url);
     const sourcePriorBoost = profile.sourcePrior[domain] || 0;
+    const focusBonus = (item as any)._focusBonus || 0;
     
     return {
       ...item,
-      score: textScore + recency + sourcePriorBoost,
+      score: textScore + recency + sourcePriorBoost + focusBonus,
     };
   });
 

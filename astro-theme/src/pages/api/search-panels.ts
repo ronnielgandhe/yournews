@@ -5,7 +5,7 @@
 
 import type { APIRoute } from 'astro';
 import { fetchGoogleNews } from '../../server/rss';
-import { rankItems, getRankProfile, type RankProfileName } from '../../server/rank';
+import { rankItems, getRankProfile, getRankFocus, filterByFocus, softBoostByFocus, type RankProfileName } from '../../server/rank';
 import { buildDigestStructured } from '../../server/digest';
 import { isRecent, timeAgo } from '../../server/time';
 
@@ -20,7 +20,7 @@ export const POST: APIRoute = async ({ request }) => {
     }
 
     const prefs = body.preferences || null;
-    const profileName = (body.profile as RankProfileName) || 'default';
+    const profileName = (body.profile as RankProfileName) || prefs?.defaultProfile || 'default';
     const raw = body.query.trim();
     const topics = raw
       .split(/,| and /gi)
@@ -44,7 +44,10 @@ export const POST: APIRoute = async ({ request }) => {
         
         const hours = rankProfile.windowHours || 72;
         
-        // 2) Retrieve from Google News
+        // 2) Get focus configuration for this profile
+        const focus = getRankFocus(profileName);
+        
+        // 3) Retrieve from Google News
         const maxLinks = 20;
         const items = await fetchGoogleNews(topic, maxLinks);
         console.info('[YN api] Fetched', { topic, count: items.length });
@@ -60,27 +63,52 @@ export const POST: APIRoute = async ({ request }) => {
             watch: [],
             tags: [],
             items: [],
-            meta: { usedOpenAI: false, recentWindowHours: hours, profile: profileName }
+            meta: { usedOpenAI: false, recentWindowHours: hours, profile: profileName, profileFallback: false }
           });
           continue;
         }
 
-        // 2) Filter recency
+        // 4) Filter recency
         const now = Date.now();
         const recent = items.filter(i => {
           const t = i?.pubDate ? Date.parse(i.pubDate) : NaN;
           return Number.isFinite(t) ? (now - t) <= hours * 3600 * 1000 : true;
         });
-        const pool = (recent.length >= 6 ? recent : items).slice(0, maxLinks);
+        let pool = (recent.length >= 6 ? recent : items).slice(0, maxLinks);
 
         console.info('[YN api] Filtered', { topic, pool: pool.length, recent: recent.length });
 
-        // 3) Rank with profile
+        // 5) Apply profile focus: hard filter first, fallback to soft boost if too few results
+        let focused = filterByFocus(pool, focus);
+        let profileFallback = false;
+        
+        if (focused.length >= 10) {
+          // Enough results with hard filter
+          pool = focused;
+          console.info('[YN api] Profile focus', { topic, profile: profileName, focused: focused.length, mode: 'hard' });
+        } else if (focused.length > 0 && focused.length < 10) {
+          // Some results but not enough - use soft boost instead
+          pool = softBoostByFocus(pool, focus);
+          profileFallback = true;
+          console.info('[YN api] Profile focus', { topic, profile: profileName, focused: focused.length, mode: 'soft-fallback' });
+        } else {
+          // No focused results or default profile - use soft boost if profile is set
+          if (profileName !== 'default') {
+            pool = softBoostByFocus(pool, focus);
+            profileFallback = true;
+            console.info('[YN api] Profile focus', { topic, profile: profileName, focused: 0, mode: 'soft-fallback' });
+          } else {
+            console.info('[YN api] No profile focus', { topic, profile: profileName });
+          }
+        }
+
+        // 6) Rank with profile
         const ranked = rankItems(pool, topic, rankProfile);
 
         console.info('[YN api] ranked', { 
           topic, 
-          profile: profileName, 
+          profile: profileName,
+          profileFallback,
           pool: pool.length, 
           top: ranked.length 
         });
@@ -121,7 +149,12 @@ export const POST: APIRoute = async ({ request }) => {
             ...item,
             timeAgo: timeAgo(item.pubDate),
           })),
-          meta: { usedOpenAI: digest.usedOpenAI, recentWindowHours: hours, profile: profileName }
+          meta: { 
+            usedOpenAI: digest.usedOpenAI, 
+            recentWindowHours: hours, 
+            profile: profileName,
+            profileFallback
+          }
         });
       } catch (err: any) {
         console.error('[YN api] panel error', topic, err?.message || err);
@@ -135,7 +168,7 @@ export const POST: APIRoute = async ({ request }) => {
           watch: [],
           tags: [],
           items: [],
-          meta: { usedOpenAI: false, recentWindowHours: 72, profile: profileName }
+          meta: { usedOpenAI: false, recentWindowHours: 72, profile: profileName, profileFallback: false }
         });
       }
     }
