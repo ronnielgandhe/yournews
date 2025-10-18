@@ -51,6 +51,13 @@ export default function YourNewsTerminal() {
   const [apiStatus, setApiStatus] = useState<'ok' | 'down' | 'unknown'>('unknown');
   const inputRef = useRef<HTMLInputElement>(null);
   const terminalRef = useRef<HTMLDivElement>(null);
+
+  // Current topics for chips (recent + fallback)
+  const fallbackTopics = ["Technology", "AI", "Markets", "Elections", "Sports", "Climate"];
+  const recentQueries = typeof localStorage !== 'undefined' 
+    ? JSON.parse(localStorage.getItem("yn_recentQueries") || "[]") 
+    : [];
+  const currentTopics = Array.from(new Set([...recentQueries, ...fallbackTopics])).slice(0, 8);
   
   // Center rect for main terminal - measured dynamically
   // Initialize with viewport-centered estimate
@@ -176,12 +183,24 @@ export default function YourNewsTerminal() {
     e.stopPropagation();
     const raw = (inputRef.current?.value ?? searchInput).trim();
     if (!raw) return;
+    spawnFromRaw(raw);
+    return false;
+  };
+
+  const spawnFromRaw = (raw: string) => {
     console.info('[YN] submit', raw);
     const topics = raw.split(/,| and /gi).map(s => s.trim()).filter(Boolean);
+    
+    // Save to recent queries in localStorage
+    if (typeof localStorage !== 'undefined') {
+      const recent = JSON.parse(localStorage.getItem("yn_recentQueries") || "[]");
+      const updated = Array.from(new Set([...topics, ...recent])).slice(0, 10);
+      localStorage.setItem("yn_recentQueries", JSON.stringify(updated));
+    }
+    
     topics.forEach((topic, idx) => createPanel(topic, idx));
     if (inputRef.current) inputRef.current.value = '';
     setSearchInput('');
-    return false;
   };
 
   const createPanel = async (topic: string, index: number) => {
@@ -336,22 +355,44 @@ export default function YourNewsTerminal() {
             </div>
           )}
         </div>
-        <div className='window-body font-mono text-sm'>
-          <div className='text-green-400 mb-4'>
-            <div className='text-base mb-2'>YourNews Terminal v1.0</div>
-            <div className='text-gray-400 text-xs mt-2'>Type topics separated by commas</div>
-            <div className='text-gray-500 text-xs mt-1'><span className='text-yellow-400'>Cmd+K</span> focus • <span className='text-yellow-400'>Esc</span> close</div>
-          </div>
-          <div className='flex items-center mt-4'>
-            <span className='text-cyan-400 mr-2'>$</span>
-            <form onSubmit={handleSubmit} className='flex-1' noValidate>
-              <input ref={inputRef} type='text' value={searchInput} onChange={(e) => setSearchInput(e.target.value)}
-                     placeholder='type anything — sentences, topics — get YOUR news'
-                     className='flex-1 bg-transparent text-white outline-none placeholder-gray-500 w-full'
-                     autoComplete='off' spellCheck={false} autoFocus />
+        <div className='window-body'>
+          <div className='yn-hero'>
+            <h1 className='yn-hero-title'>YourNews</h1>
+            <p className='yn-hero-sub'>Search anything — get <span className='yn-accent'>YOUR</span> news</p>
+
+            <form onSubmit={handleSubmit} noValidate>
+              <input 
+                ref={inputRef}
+                type='text' 
+                value={searchInput} 
+                onChange={(e) => setSearchInput(e.target.value)}
+                placeholder='trump, g7, apple m4'
+                className='yn-search'
+                autoComplete='off' 
+                spellCheck={false} 
+                autoFocus 
+              />
             </form>
+
+            <div className='yn-chip-row'>
+              {currentTopics.map(topic => (
+                <button 
+                  key={topic} 
+                  className='yn-chip' 
+                  onClick={() => spawnFromRaw(topic)}
+                  type='button'
+                >
+                  #{topic}
+                </button>
+              ))}
+            </div>
+
+            {windows.length > 0 && (
+              <div className='mt-4 text-gray-400 text-xs text-center'>
+                Active: {windows.filter(w => !w.minimized).length} / Total: {windows.length}
+              </div>
+            )}
           </div>
-          {windows.length > 0 && <div className='mt-3 text-gray-500 text-xs'>Active: {windows.filter(w => !w.minimized).length} / Total: {windows.length}</div>}
         </div>
       </div>
       <div className='fixed inset-0 pointer-events-none' style={{ zIndex: 999 }}>
