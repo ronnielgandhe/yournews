@@ -419,8 +419,7 @@
   transition: opacity 0.2s ease, transform 0.2s ease;
 }
 
-.yn-settings-trigger:hover .yn-settings-popover,
-.yn-settings-popover:hover {
+.yn-settings-trigger:hover .yn-settings-popover {
   opacity: 1;
   pointer-events: auto;
   transform: translateY(0);

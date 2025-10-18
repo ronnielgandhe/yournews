@@ -1,4 +1,4 @@
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useRef } from 'react';
 import type { MouseEvent } from 'react';
 import { MdWifi } from 'react-icons/md';
 import { FaApple } from 'react-icons/fa';
@@ -18,6 +18,7 @@ export default function MacToolbar({ onSettingsClick }: MacToolbarProps) {
   const [activeMenu, setActiveMenu] = useState<string | null>(null);
   const [prefs, setPrefs] = useState<AppPrefs>(loadPrefs());
   const [showSettings, setShowSettings] = useState(false);
+  const settingsTimeoutRef = useRef<NodeJS.Timeout | null>(null);
 
   useEffect(() => {
     const timer = setInterval(() => {
@@ -40,6 +41,19 @@ export default function MacToolbar({ onSettingsClick }: MacToolbarProps) {
     const updated = { ...prefs, [key]: value };
     setPrefs(updated);
     savePrefs(updated);
+  };
+
+  const handleSettingsEnter = () => {
+    if (settingsTimeoutRef.current) {
+      clearTimeout(settingsTimeoutRef.current);
+    }
+    setShowSettings(true);
+  };
+
+  const handleSettingsLeave = () => {
+    settingsTimeoutRef.current = setTimeout(() => {
+      setShowSettings(false);
+    }, 300);
   };
 
   const toggleMenu = (menu: string, e: MouseEvent) => {
@@ -146,8 +160,8 @@ export default function MacToolbar({ onSettingsClick }: MacToolbarProps) {
           {/* Settings Menu */}
           <div 
             className='relative yn-settings-trigger'
-            onMouseEnter={() => setShowSettings(true)}
-            onMouseLeave={() => setShowSettings(false)}
+            onMouseEnter={handleSettingsEnter}
+            onMouseLeave={handleSettingsLeave}
           >
             <button 
               className='cursor-pointer hover:bg-white/10 px-2 py-0.5 rounded transition-colors'
@@ -156,7 +170,12 @@ export default function MacToolbar({ onSettingsClick }: MacToolbarProps) {
               Settings
             </button>
             {showSettings && (
-              <div className='yn-settings-popover' style={{ opacity: 1, pointerEvents: 'auto', transform: 'translateY(0)' }}>
+              <div 
+                className='yn-settings-popover' 
+                style={{ opacity: 1, pointerEvents: 'auto', transform: 'translateY(0)' }}
+                onMouseEnter={handleSettingsEnter}
+                onMouseLeave={handleSettingsLeave}
+              >
                 {/* Summary Level */}
                 <div className='yn-settings-section'>
                   <label className='yn-settings-label'>Summary Length</label>
