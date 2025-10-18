@@ -19,6 +19,8 @@ export const POST: APIRoute = async ({ request }) => {
       );
     }
 
+    console.info('[YN api] req', { q: body.query, profile: body.profile, hasPrefs: !!body.preferences, defaultProfile: body.preferences?.defaultProfile });
+
     const prefs = body.preferences || null;
     const profileName = (body.profile as RankProfileName) || prefs?.defaultProfile || 'default';
     const raw = body.query.trim();
@@ -82,23 +84,30 @@ export const POST: APIRoute = async ({ request }) => {
         let focused = filterByFocus(pool, focus);
         let profileFallback = false;
         
+        console.info('[YN api] focus', {
+          topic,
+          profile: profileName,
+          total: pool.length,
+          hardHits: focused.length,
+        });
+        
         if (focused.length >= 10) {
           // Enough results with hard filter
           pool = focused;
-          console.info('[YN api] Profile focus', { topic, profile: profileName, focused: focused.length, mode: 'hard' });
+          console.info('[YN api] Using hard filter', { topic, profile: profileName, count: focused.length });
         } else if (focused.length > 0 && focused.length < 10) {
           // Some results but not enough - use soft boost instead
           pool = softBoostByFocus(pool, focus);
           profileFallback = true;
-          console.info('[YN api] Profile focus', { topic, profile: profileName, focused: focused.length, mode: 'soft-fallback' });
+          console.info('[YN api] Using soft boost (not enough hard hits)', { topic, profile: profileName, hardHits: focused.length, usedFallback: true });
         } else {
           // No focused results or default profile - use soft boost if profile is set
           if (profileName !== 'default') {
             pool = softBoostByFocus(pool, focus);
             profileFallback = true;
-            console.info('[YN api] Profile focus', { topic, profile: profileName, focused: 0, mode: 'soft-fallback' });
+            console.info('[YN api] Using soft boost (no hard hits)', { topic, profile: profileName, usedFallback: true });
           } else {
-            console.info('[YN api] No profile focus', { topic, profile: profileName });
+            console.info('[YN api] No profile focus applied', { topic, profile: profileName });
           }
         }
 

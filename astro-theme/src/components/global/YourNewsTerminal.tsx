@@ -285,7 +285,7 @@ export default function YourNewsTerminal() {
     }]);
     setMaxZ(prev => prev + index + 1);
     try {
-      console.info('[YN] Fetching POST /api/search-panels for:', topic, profile ? `profile: ${profile}` : '');
+      console.info('[YN] submit', { query: topic, profileSent: profile || 'default', hasPrefs: !!preferences });
       const controller = new AbortController();
       const timeoutId = setTimeout(() => controller.abort(), 30000);
       const response = await fetch('/api/search-panels', {

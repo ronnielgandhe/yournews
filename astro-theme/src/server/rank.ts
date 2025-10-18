@@ -78,7 +78,12 @@ export function filterByFocus(items: PanelItem[], focus: RankFocus): PanelItem[]
     try {
       const host = new URL(it.url).hostname.replace(/^www\./, '');
       const title = (it.title || '').toLowerCase();
-      const kwHit = [...kw].some(k => title.includes(k));
+      // Tokenize title by non-alphanumeric chars for better matching
+      const tokens = title.split(/[^a-z0-9]+/).filter(Boolean);
+      const kwHit = [...kw].some(k => {
+        // Check if keyword appears in title as whole word or substring
+        return tokens.includes(k) || title.includes(k);
+      });
       const domainHit = allowed.has(host);
       return kwHit || domainHit;
     } catch {
@@ -101,7 +106,8 @@ export function softBoostByFocus(items: PanelItem[], focus: RankFocus): PanelIte
     try {
       const host = new URL(it.url).hostname.replace(/^www\./, '');
       const title = (it.title || '').toLowerCase();
-      const kwHit = [...kw].some(k => title.includes(k));
+      const tokens = title.split(/[^a-z0-9]+/).filter(Boolean);
+      const kwHit = [...kw].some(k => tokens.includes(k) || title.includes(k));
       const domainHit = allowed.has(host);
       return { 
         ...it, 
