@@ -1,19 +1,69 @@
-import { useState } from 'react';
+import { useState, useEffect } from 'react';
 
 export default function Home() {
-  // Minimal state: query input, loading/error, digest and sources, showSources toggle
-  const [query, setQuery] = useState('');
+  // State for personalized feed
+  const [feed, setFeed] = useState([]);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState('');
-  const [digest, setDigest] = useState(null); // { summary_md }
+  const userId = 'demo'; // Fixed demo user for MVP
+  const [keywords, setKeywords] = useState([]);
+
+  // Legacy digest state (keep for backward compatibility with existing UI)
+  const [query, setQuery] = useState('');
+  const [digest, setDigest] = useState(null);
   const [sources, setSources] = useState([]);
   const [intentTags, setIntentTags] = useState([]);
   const [timelineData, setTimelineData] = useState(null);
   const [entitiesData, setEntitiesData] = useState(null);
-  const [summaryLevel, setSummaryLevel] = useState('short'); // short | medium | long
-  const [summaryCache] = useState(() => new Map()); // key: digest_md|level -> summary
+  const [summaryLevel, setSummaryLevel] = useState('short');
+  const [summaryCache] = useState(() => new Map());
   const summaryLevelsEnabled = (typeof process !== 'undefined' && process.env && process.env.NEXT_PUBLIC_AI_SUMMARY_LEVELS_ENABLED === 'true') || (typeof window !== 'undefined' && (window as any).NEXT_PUBLIC_AI_SUMMARY_LEVELS_ENABLED === 'true');
   const [showSources, setShowSources] = useState(false);
+  const [viewMode, setViewMode] = useState('feed'); // 'feed' or 'digest'
+
+  // Load personalized feed on mount
+  useEffect(() => {
+    loadFeed();
+  }, []);
+
+  const loadFeed = async () => {
+    setLoading(true);
+    setError('');
+    try {
+      const res = await fetch(`/api/feed?userId=${userId}`);
+      if (!res.ok) {
+        const text = await res.text();
+        throw new Error(`Failed to load feed: ${text.slice(0, 200)}`);
+      }
+      const data = await res.json();
+      setFeed(data.items || []);
+      setKeywords(data.keywords || []);
+    } catch (e) {
+      console.error('Load feed error:', e);
+      setError(String(e && (e as any).message ? (e as any).message : e));
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  const handleReadArticle = async (article) => {
+    try {
+      // Track click
+      await fetch('/api/track', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ userId, articleId: article._id }),
+      });
+      
+      // Open article in new tab
+      window.open(article.url, '_blank');
+      
+      // Reload feed to get updated personalization
+      setTimeout(() => loadFeed(), 500);
+    } catch (e) {
+      console.error('Track click error:', e);
+    }
+  };
 
   // Render minimal markdown (headings, bullets, links)
   const renderMarkdown = (md) => {
@@ -113,7 +163,125 @@ export default function Home() {
   return (
     <div style={{ minHeight: '100vh', padding: '3rem 1rem', fontFamily: 'system-ui, -apple-system, sans-serif' }}>
       <div style={{ maxWidth: 760, margin: '0 auto' }}>
-        <h1 style={{ margin: 0, marginBottom: '1rem', fontSize: '1.25rem' }}>News Digest</h1>
+        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '1rem' }}>
+          <h1 style={{ margin: 0, fontSize: '1.25rem' }}>YourNews</h1>
+          <div style={{ display: 'flex', gap: '0.5rem' }}>
+            <button 
+              onClick={() => setViewMode('feed')}
+              style={{ 
+                padding: '0.35rem 0.75rem', 
+                borderRadius: 6, 
+                border: viewMode === 'feed' ? '2px solid #0b74de' : '1px solid #ddd',
+                background: viewMode === 'feed' ? '#e8f6ff' : 'white',
+                cursor: 'pointer',
+                fontSize: '0.9rem',
+              }}
+            >
+              Feed
+            </button>
+            <button 
+              onClick={() => setViewMode('digest')}
+              style={{ 
+                padding: '0.35rem 0.75rem', 
+                borderRadius: 6, 
+                border: viewMode === 'digest' ? '2px solid #0b74de' : '1px solid #ddd',
+                background: viewMode === 'digest' ? '#e8f6ff' : 'white',
+                cursor: 'pointer',
+                fontSize: '0.9rem',
+              }}
+            >
+              Search
+            </button>
+          </div>
+        </div>
+
+        {viewMode === 'feed' && (
+          <>
+            {keywords.length > 0 && (
+              <div style={{ marginBottom: '1rem', padding: '0.5rem', background: '#f0f9ff', borderRadius: 6, border: '1px solid #bfdbfe' }}>
+                <div style={{ fontSize: '0.85rem', color: '#1e3a8a', marginBottom: '0.3rem' }}>
+                  <strong>Personalized for you:</strong>
+                </div>
+                <div style={{ display: 'flex', gap: '0.4rem', flexWrap: 'wrap' }}>
+                  {keywords.map((kw, i) => (
+                    <span key={i} style={{ background: '#dbeafe', color: '#1e40af', padding: '0.2rem 0.5rem', borderRadius: 12, fontSize: '0.8rem' }}>
+                      {kw}
+                    </span>
+                  ))}
+                </div>
+              </div>
+            )}
+
+            {error && <div style={{ color: '#b00020', marginBottom: '0.75rem' }}>{error}</div>}
+
+            {loading ? (
+              <div style={{ textAlign: 'center', padding: '2rem', color: '#666' }}>Loading feed...</div>
+            ) : feed.length === 0 ? (
+              <div style={{ textAlign: 'center', padding: '2rem', color: '#666' }}>
+                <p>No articles yet.</p>
+                <p style={{ fontSize: '0.9rem' }}>Run the seed command to populate your feed:</p>
+                <code style={{ background: '#f5f5f5', padding: '0.5rem', borderRadius: 4, display: 'inline-block' }}>
+                  curl http://localhost:8000/seed
+                </code>
+              </div>
+            ) : (
+              <>
+                <div style={{ marginBottom: '0.5rem', color: '#666', fontSize: '0.9rem' }}>
+                  {feed.length} articles • Click to read and personalize your feed
+                </div>
+                <div style={{ display: 'flex', flexDirection: 'column', gap: '1rem' }}>
+                  {feed.map((article) => (
+                    <div 
+                      key={article._id}
+                      style={{ 
+                        border: '1px solid #e5e7eb', 
+                        borderRadius: 8, 
+                        padding: '1rem',
+                        background: 'white',
+                        transition: 'box-shadow 0.2s',
+                      }}
+                    >
+                      <h3 style={{ margin: 0, marginBottom: '0.5rem', fontSize: '1rem', lineHeight: 1.4 }}>
+                        {article.title}
+                      </h3>
+                      <div style={{ fontSize: '0.85rem', color: '#666', marginBottom: '0.75rem' }}>
+                        {article.source} • {new Date(article.pubDate).toLocaleDateString()}
+                      </div>
+                      <p style={{ margin: 0, marginBottom: '0.75rem', fontSize: '0.9rem', color: '#444', lineHeight: 1.5 }}>
+                        {(article.summary || '').slice(0, 200)}
+                        {article.summary && article.summary.length > 200 ? '...' : ''}
+                      </p>
+                      <button
+                        onClick={() => handleReadArticle(article)}
+                        style={{
+                          padding: '0.4rem 0.8rem',
+                          borderRadius: 6,
+                          border: 'none',
+                          background: '#0b74de',
+                          color: 'white',
+                          cursor: 'pointer',
+                          fontSize: '0.85rem',
+                        }}
+                      >
+                        Read →
+                      </button>
+                    </div>
+                  ))}
+                </div>
+              </>
+            )}
+
+            <div style={{ marginTop: '2rem', padding: '1rem', background: '#fef3c7', borderRadius: 6, border: '1px solid #fbbf24' }}>
+              <div style={{ fontSize: '0.9rem', color: '#78350f' }}>
+                <strong>💡 Tip:</strong> Click a few articles—your feed adapts to your interests after 3 clicks!
+              </div>
+            </div>
+          </>
+        )}
+
+        {viewMode === 'digest' && (
+          <>
+            <h2 style={{ margin: 0, marginBottom: '1rem', fontSize: '1.1rem' }}>Search & Digest</h2>
 
         <div style={{ display: 'flex', gap: '0.75rem', alignItems: 'center', marginBottom: '0.75rem' }}>
           <input
@@ -247,10 +415,11 @@ export default function Home() {
           </div>
         )}
 
-        <div style={{ marginTop: '2rem', color: '#666', fontSize: '0.9rem' }}>
-          {/* Short note about simplified UI */}
-          This page provides a single, focused flow: enter a query, build a digest, and optionally view sources. Other UI controls were removed to reduce clutter.
-        </div>
+            <div style={{ marginTop: '2rem', color: '#666', fontSize: '0.9rem' }}>
+              Legacy search & digest interface. The new personalized feed is on the "Feed" tab.
+            </div>
+          </>
+        )}
       </div>
     </div>
   );

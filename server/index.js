@@ -31,6 +31,9 @@ const port = process.env.PORT || 8000;
 // enable CORS for the web frontend
 app.use(cors());
 
+// Parse JSON bodies (add once at top level)
+app.use(express.json());
+
 // Load AI helper (server-friendly)
 let aiHelper = null;
 try {
@@ -77,12 +80,34 @@ app.get('/search/all', async (req, res) => {
   }
 });
 
-// Start server
-app.listen(port, () => {
-  console.log(`Server listening on port ${port}`);
-  console.log('OPENAI_API_KEY present=', !!process.env.OPENAI_API_KEY);
-  console.log('NEWSAPI_KEY present=', !!process.env.NEWSAPI_KEY);
-});
+// Mount new routes for MVP features
+app.use('/ingest', require('./src/routes/ingest'));
+app.use('/track', require('./src/routes/track'));
+app.use('/feed', require('./src/routes/feed'));
+app.use('/seed', require('./src/routes/seed'));
+
+// Connect to MongoDB and start server
+(async () => {
+  try {
+    // Only connect if MONGODB_URI is provided
+    if (process.env.MONGODB_URI) {
+      const { connectDB } = require('./src/lib/db');
+      await connectDB();
+      console.log('✓ MongoDB connected');
+    } else {
+      console.warn('⚠ MONGODB_URI not set - persistence features disabled');
+    }
+
+    app.listen(port, () => {
+      console.log(`Server listening on port ${port}`);
+      console.log('OPENAI_API_KEY present=', !!process.env.OPENAI_API_KEY);
+      console.log('NEWSAPI_KEY present=', !!process.env.NEWSAPI_KEY);
+    });
+  } catch (err) {
+    console.error('Failed to start server:', err);
+    process.exit(1);
+  }
+})();
 
 // --- /search/grouped?terms=a,b,c  returns { newsapi: {term: []}, google: {term: [...]}}
 app.get('/search/grouped', async (req, res) => {
@@ -128,55 +153,8 @@ app.get('/ai/status', (_req, res) => {
   });
 });
 
-// --- POST /ai/extract
-app.post('/ai/extract', express.json(), async (req, res) => {
-  const text = String((req.body && req.body.text) || req.query.text || '').trim().slice(0, 500);
-  if (!text) return res.status(400).json({ error: 'Missing text' });
-  const systemPrompt = `You extract search queries from messy user text. Return strict JSON only.\nRules:\n- Pull concise, searchable terms (entities & noun phrases).\n- Detect relationships like "<entity> impact on <topic>" as separate queries.\n- Lowercase, dedupe, ≤8 total.\n- If a term implies a market/ticker (e.g., nvidia), include 'nvda stock' as a term.\nOutput:\n{"primary_terms":[],"relation_queries":[],"separate_terms":[]}`;
-  // Try OpenAI SDK if available and key present
-  if (process.env.OPENAI_API_KEY && OpenAI) {
-    try {
-      console.log('/ai/extract: using OpenAI SDK');
-      const client = new OpenAI.OpenAIApi(new OpenAI.Configuration({ apiKey: process.env.OPENAI_API_KEY }));
-      const model = 'gpt-4o-mini';
-      const messages = [
-        { role: 'system', content: systemPrompt },
-        { role: 'user', content: text }
-      ];
-      const resp = await client.createChatCompletion({ model, messages, temperature: 0.2, max_tokens: 300 });
-      const raw = resp && resp.data && resp.data.choices && resp.data.choices[0] && resp.data.choices[0].message && resp.data.choices[0].message.content;
-      if (raw) {
-        // try to parse JSON blob inside raw
-        const m = raw.match(/\{[\s\S]*\}/);
-        if (m) {
-          try {
-            const parsed = JSON.parse(m[0]);
-            const primary_terms = Array.isArray(parsed.primary_terms) ? parsed.primary_terms.map(s => String(s).toLowerCase().trim()) : [];
-            const relation_queries = Array.isArray(parsed.relation_queries) ? parsed.relation_queries.map(s => String(s).toLowerCase().trim()) : [];
-            const separate_terms = Array.isArray(parsed.separate_terms) ? parsed.separate_terms.map(s => String(s).toLowerCase().trim()) : [];
-            return res.json({ primary_terms, relation_queries, separate_terms });
-          } catch (e) {
-            console.warn('/ai/extract: failed parse json from model reply', e && e.message);
-          }
-        }
-      }
-    } catch (err) {
-      console.warn('/ai/extract: OpenAI SDK error', err && (err.message || err.toString()));
-    }
-  }
-  // Fallback: simple splitter
-  try {
-    const candidates = text.split(/[,&]| and |\s+/).map(s => String(s).trim().toLowerCase()).filter(Boolean);
-    const dedup = [];
-    candidates.forEach(c => { if (!dedup.includes(c) && c.length > 2) dedup.push(c); });
-    const primary = dedup.slice(0, 4);
-    const relation = dedup.slice(4,6);
-    const separate = dedup.slice(6,8);
-    return res.json({ primary_terms: primary, relation_queries: relation, separate_terms: separate });
-  } catch (e) {
-    return res.status(500).json({ error: 'Failed to extract terms' });
-  }
-});
+// --- REMOVED DUPLICATE /ai/extract (lines 115-148)
+// Keeping only the improved version below (lines 150-190)
 
 // --- helper: call OpenAI Chat Completions via REST
 async function callOpenAIChat(prompt, system = 'You are a helpful summarization assistant. Output markdown only.') {
@@ -212,7 +190,7 @@ async function callOpenAIChat(prompt, system = 'You are a helpful summarization 
 }
 
 // --- improved /ai/extract: filter stopwords, dedupe case-insensitively, limit to 8 terms, and log safe metrics
-app.post('/ai/extract', express.json(), async (req, res) => {
+app.post('/ai/extract', async (req, res) => {
   const text = String((req.body && req.body.text) || req.query.text || '').trim().slice(0, 500);
   if (!text) return res.status(400).json({ error: 'Missing text' });
 
@@ -286,7 +264,7 @@ app.post('/ai/extract', express.json(), async (req, res) => {
 });
 
 // --- digest-from-links: local fallback summarizer that fetches titles and returns markdown
-app.post('/ai/digest-from-links', express.json(), async (req, res) => {
+app.post('/ai/digest-from-links', async (req, res) => {
   const { topic, links, style } = req.body || {};
   console.log('/ai/digest-from-links called, topic=', topic, 'links_count=', Array.isArray(links) ? links.length : 0, 'style=', style, 'OPENAI present=', !!process.env.OPENAI_API_KEY);
   if (!links || !Array.isArray(links) || links.length === 0) return res.status(400).json({ error: 'Missing links' });
@@ -332,7 +310,7 @@ app.post('/ai/digest-from-links', express.json(), async (req, res) => {
 });
 
 // --- digest: accept terms and itemsByTerm and return simple markdown digests
-app.post('/ai/digest', express.json(), (req, res) => {
+app.post('/ai/digest', (req, res) => {
   const { terms, itemsByTerm, style } = req.body || {};
   if (!terms || !Array.isArray(terms) || terms.length === 0) return res.status(400).json({ error: 'Missing terms' });
   try {
@@ -378,7 +356,7 @@ app.post('/ai/digest', express.json(), (req, res) => {
 
 // --- /ai/multi-digest: accepts { query } and when AI_MULTI_QUERY_ENABLED=true will
 // ask AI to split the query, fetch results for each, and return a combined markdown digest
-app.post('/ai/multi-digest', express.json(), async (req, res) => {
+app.post('/ai/multi-digest', async (req, res) => {
   const { query, style } = req.body || {};
   if (!query || !String(query).trim()) return res.status(400).json({ error: 'Missing query' });
   const enabled = (process.env.AI_MULTI_QUERY_ENABLED === 'true' || process.env.NEXT_PUBLIC_AI_MULTI_QUERY_ENABLED === 'true');
@@ -446,7 +424,7 @@ app.post('/ai/multi-digest', express.json(), async (req, res) => {
 });
 
 // --- aiSummarize: summarize a digest markdown at a given level
-app.post('/ai/summarize', express.json(), async (req, res) => {
+app.post('/ai/summarize', async (req, res) => {
   const { digestMd, level } = req.body || {};
   if (!digestMd || !level) return res.status(400).json({ error: 'Missing digestMd or level' });
   try {
