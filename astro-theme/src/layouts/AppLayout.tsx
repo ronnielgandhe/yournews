@@ -1,36 +1,18 @@
-import { useEffect, useState } from 'react';
 import MacToolbar from '../components/global/MacToolbar';
 import YourNewsTerminal from '../components/global/YourNewsTerminal';
 import MobileDock from '../components/global/MobileDock';
 import DesktopDock from '../components/global/DesktopDock';
 
 interface AppLayoutProps {
-  initialBg: string;
-  backgroundMap: Record<string, string>;
+  backgroundUrl: string;
 }
 
-export default function Desktop({ initialBg, backgroundMap }: AppLayoutProps) {
-  const [currentBg, setCurrentBg] = useState<string>(initialBg);
-
-  useEffect(() => {
-    const lastBg = localStorage.getItem('lastBackground');
-
-    if (lastBg === initialBg) {
-      const bgKeys = Object.keys(backgroundMap);
-      const availableBgs = bgKeys.filter((bg) => bg !== lastBg);
-      const newBg =
-        availableBgs[Math.floor(Math.random() * availableBgs.length)];
-      setCurrentBg(newBg);
-    }
-
-    localStorage.setItem('lastBackground', currentBg);
-  }, [initialBg, backgroundMap]);
-
+export default function Desktop({ backgroundUrl }: AppLayoutProps) {
   return (
     <div className='relative w-screen h-screen overflow-hidden'>
       <div
         className='absolute inset-0 bg-cover bg-center'
-        style={{ backgroundImage: `url(${backgroundMap[currentBg]})` }}
+        style={{ backgroundImage: `url(${backgroundUrl})` }}
       />
 
       <div className='relative z-10'>

@@ -49,8 +49,8 @@ export default function SettingsModal({ isOpen, onClose }: SettingsModalProps) {
   };
 
   return (
-    <div className='fixed inset-0 z-[99999] bg-black/60 backdrop-blur-sm flex items-center justify-center p-4' onClick={onClose}>
-      <div className='bg-black/90 border border-white/10 rounded-2xl p-6 max-w-2xl w-full max-h-[80vh] overflow-y-auto' onClick={(e) => e.stopPropagation()}>
+    <div className='fixed inset-0 z-[99999] bg-black/70 backdrop-blur-md flex items-center justify-center p-4' onClick={onClose}>
+      <div className='bg-black/85 backdrop-blur-2xl border border-white/15 rounded-2xl p-6 max-w-2xl w-full max-h-[80vh] overflow-y-auto' onClick={(e) => e.stopPropagation()}>
         {/* Header */}
         <div className='flex items-center justify-between mb-6'>
           <h2 className='text-xl font-semibold text-white'>Settings</h2>

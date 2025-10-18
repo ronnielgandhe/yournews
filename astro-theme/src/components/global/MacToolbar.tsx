@@ -78,7 +78,7 @@ export default function MacToolbar({ onSettingsClick }: MacToolbarProps) {
         </div>
       </div>
 
-      <div className='sticky top-0 z-[1000] hidden md:flex bg-black/20 backdrop-blur-md text-white h-6 px-4 items-center justify-between text-sm'>
+      <div className='sticky top-0 z-[1000] hidden md:flex bg-black/40 backdrop-blur-xl text-white h-6 px-4 items-center justify-between text-sm'>
         <div className='flex items-center space-x-4'>
           {/* Apple Menu */}
           <div className='relative'>
@@ -89,7 +89,7 @@ export default function MacToolbar({ onSettingsClick }: MacToolbarProps) {
               <FaApple size={16} />
             </button>
             {activeMenu === 'apple' && (
-              <div className='absolute top-full left-0 mt-1 bg-black/90 backdrop-blur-lg border border-white/10 rounded-lg shadow-2xl min-w-[200px] py-1 z-[100000]'>
+              <div className='absolute top-full left-0 mt-1 bg-black/85 backdrop-blur-2xl border border-white/15 rounded-lg shadow-2xl min-w-[200px] py-1 z-[100000]'>
                 <div className='px-4 py-2 text-white/50 text-xs font-semibold border-b border-white/10'>YourNews</div>
                 <button 
                   onClick={(e) => { 
@@ -116,7 +116,7 @@ export default function MacToolbar({ onSettingsClick }: MacToolbarProps) {
               YourNews
             </button>
             {activeMenu === 'yournews' && (
-              <div className='absolute top-full left-0 mt-1 bg-black/90 backdrop-blur-lg border border-white/10 rounded-lg shadow-2xl min-w-[200px] py-1 z-[100000]'>
+              <div className='absolute top-full left-0 mt-1 bg-black/85 backdrop-blur-2xl border border-white/15 rounded-lg shadow-2xl min-w-[200px] py-1 z-[100000]'>
                 <button 
                   onClick={(e) => { 
                     e.stopPropagation(); 
