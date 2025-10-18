@@ -81,6 +81,7 @@ export default function YourNewsTerminal() {
     }]);
     setMaxZ(prev => prev + index + 1);
     try {
+      console.info('[YN] Fetching POST /api/search-panels for:', topic);
       const controller = new AbortController();
       const timeoutId = setTimeout(() => controller.abort(), 30000);
       const response = await fetch('/api/search-panels', {
@@ -90,13 +91,22 @@ export default function YourNewsTerminal() {
         signal: controller.signal,
       });
       clearTimeout(timeoutId);
-      if (!response.ok) throw new Error(`HTTP ${response.status}`);
+      console.info('[YN] Response status:', response.status, response.statusText);
+      if (!response.ok) {
+        const errorText = await response.text().catch(() => `HTTP ${response.status}`);
+        console.error('[YN] API error response:', errorText);
+        throw new Error(`HTTP ${response.status}: ${errorText}`);
+      }
       const result = await response.json();
+      console.info('[YN] Response JSON:', result);
       if (!result.panels || !Array.isArray(result.panels) || result.panels.length === 0) {
         throw new Error('Empty panel response');
       }
       const panel = result.panels[0];
-      if (!panel.summaryMd || !Array.isArray(panel.items)) throw new Error('Invalid panel');
+      if (!panel.summaryMd || !Array.isArray(panel.items)) {
+        console.error('[YN] Invalid panel structure:', panel);
+        throw new Error('Invalid panel');
+      }
       console.info('[YN] got panels', { topic, itemCount: panel.items.length });
       setWindows(prev => prev.map(w => w.id === windowId ? {
         ...w,
@@ -110,7 +120,7 @@ export default function YourNewsTerminal() {
       setWindows(prev => prev.map(w => w.id === windowId ? { ...w, z: maxZ + 1 } : w));
     } catch (err) {
       const errorMsg = err instanceof Error ? err.message : 'Failed to load';
-      console.error('[YN] error', topic, errorMsg);
+      console.error('[YN] error', topic, errorMsg, err);
       setWindows(prev => prev.map(w => w.id === windowId ? { ...w, loading: false, error: errorMsg } : w));
     }
   };
