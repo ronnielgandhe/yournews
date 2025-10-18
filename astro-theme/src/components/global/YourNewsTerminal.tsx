@@ -376,16 +376,11 @@ export default function YourNewsTerminal() {
       )}
       <div ref={terminalRef} className='glass-pane rounded-2xl border shadow-lg w-full max-w-4xl mx-4 overflow-hidden'>
         <div className='window-titlebar'>
-          <div className='window-traffic'>
-            <div className='window-dot red' />
-            <div className='window-dot yellow' />
-            <div className='window-dot green' />
-          </div>
           <div className='flex-1' />
           {apiStatus === 'ok' && (
-            <div className='flex items-center gap-1.5'>
-              <div className='w-2 h-2 rounded-full bg-green-400 animate-pulse' />
-              <span className='text-green-400 text-xs font-medium'>Live</span>
+            <div className='flex items-center gap-2'>
+              <div className='w-3 h-3 rounded-full bg-green-400 animate-pulse' />
+              <span className='text-green-400 text-sm font-semibold'>Live</span>
             </div>
           )}
         </div>
