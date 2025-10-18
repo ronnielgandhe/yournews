@@ -1,4 +1,5 @@
 import { useState, useEffect, useRef } from 'react';
+import ReactMarkdown from 'react-markdown';
 
 interface WindowData {
   id: string;
@@ -11,6 +12,8 @@ interface WindowData {
   error: string | null;
   data: {
     summaryMd: string;
+    insights: string[];
+    tags: string[];
     items: Array<{
       title: string;
       url: string;
@@ -107,12 +110,20 @@ export default function YourNewsTerminal() {
         console.error('[YN] Invalid panel structure:', panel);
         throw new Error('Invalid panel');
       }
-      console.info('[YN] got panels', { topic, itemCount: panel.items.length });
+      console.info('[YN] panel', { 
+        topic, 
+        insights: panel.insights?.length || 0, 
+        tags: panel.tags?.length || 0, 
+        items: panel.items.length,
+        usedOpenAI: panel.meta?.usedOpenAI 
+      });
       setWindows(prev => prev.map(w => w.id === windowId ? {
         ...w,
         loading: false,
         data: {
           summaryMd: panel.summaryMd,
+          insights: panel.insights || [],
+          tags: panel.tags || [],
           items: panel.items.slice(0, 7).map((item: any) => ({ ...item, timeAgo: timeAgo(item.pubDate) })),
         }
       } : w));
@@ -137,17 +148,15 @@ export default function YourNewsTerminal() {
           ⚠️ API down
         </div>
       )}
-      <div className='bg-black/80 backdrop-blur-lg rounded-xl overflow-hidden shadow-2xl border border-white/10 w-full max-w-4xl mx-4'>
-        <div className='bg-gray-800/90 px-4 py-2 flex items-center border-b border-white/10'>
-          <div className='flex gap-2'>
-            <div className='w-3 h-3 rounded-full bg-red-500' />
-            <div className='w-3 h-3 rounded-full bg-yellow-500' />
-            <div className='w-3 h-3 rounded-full bg-green-500' />
+      <div className='glass-pane rounded-2xl border shadow-lg w-full max-w-4xl mx-4 overflow-hidden'>
+        <div className='window-titlebar'>
+          <div className='window-traffic'>
+            <div className='window-dot red' />
+            <div className='window-dot yellow' />
+            <div className='window-dot green' />
           </div>
-          <div className='flex-1 text-center text-sm text-white/70'>YourNews Terminal</div>
-          {apiStatus === 'ok' && <div className='text-xs text-green-400'>● OK</div>}
         </div>
-        <div className='p-6 font-mono text-sm'>
+        <div className='window-body font-mono text-sm'>
           <div className='text-green-400 mb-4'>
             <div className='text-base mb-2'>YourNews Terminal v1.0</div>
             <div className='text-gray-400 text-xs mt-2'>Type topics separated by commas</div>
@@ -183,12 +192,13 @@ interface DraggableWindowProps {
 function DraggableWindow({ window: win, onClose, onMinimize, onFocus, onMove }: DraggableWindowProps) {
   const [isDragging, setIsDragging] = useState(false);
   const [dragStart, setDragStart] = useState({ x: 0, y: 0 });
+  
   const handleMouseDown = (e: React.MouseEvent) => {
-    if ((e.target as HTMLElement).closest('.window-controls')) return;
     setIsDragging(true);
     setDragStart({ x: e.clientX, y: e.clientY });
     onFocus(win.id);
   };
+
   useEffect(() => {
     if (!isDragging) return;
     const handleMouseMove = (e: MouseEvent) => {
@@ -203,37 +213,99 @@ function DraggableWindow({ window: win, onClose, onMinimize, onFocus, onMove }: 
       document.removeEventListener('mouseup', handleMouseUp);
     };
   }, [isDragging, dragStart, win.id, onMove]);
+
   if (win.minimized) return null;
+
   return (
-    <div className='fixed bg-black/90 backdrop-blur-lg rounded-xl border border-white/10 shadow-2xl overflow-hidden'
-         style={{ left: win.x, top: win.y, zIndex: win.z, width: '600px', maxHeight: '500px', cursor: isDragging ? 'grabbing' : 'default' }}
-         onClick={() => onFocus(win.id)}>
-      <div className='bg-gray-800/90 px-4 py-2 flex items-center cursor-grab active:cursor-grabbing border-b border-white/10' onMouseDown={handleMouseDown}>
-        <div className='flex gap-2 window-controls'>
-          <button onClick={(e) => { e.stopPropagation(); onClose(win.id); }} className='w-3 h-3 rounded-full bg-red-500 hover:bg-red-600' />
-          <button onClick={(e) => { e.stopPropagation(); onMinimize(win.id); }} className='w-3 h-3 rounded-full bg-yellow-500 hover:bg-yellow-600' />
-          <div className='w-3 h-3 rounded-full bg-green-500' />
+    <div 
+      className='glass-pane rounded-2xl border shadow-lg fixed overflow-hidden'
+      style={{ left: win.x, top: win.y, zIndex: win.z, width: '600px', maxHeight: '500px' }}
+      onClick={() => onFocus(win.id)}
+    >
+      <div className='window-titlebar' onMouseDown={handleMouseDown}>
+        <div className='window-traffic'>
+          <button 
+            onClick={(e) => { e.stopPropagation(); onClose(win.id); }} 
+            className='window-dot red' 
+            aria-label='Close'
+          />
+          <button 
+            onClick={(e) => { e.stopPropagation(); onMinimize(win.id); }} 
+            className='window-dot yellow' 
+            aria-label='Minimize'
+          />
+          <div className='window-dot green' aria-label='Maximize' />
         </div>
-        <div className='flex-1 text-center text-sm text-white/70 truncate px-4'>{win.topic}</div>
       </div>
-      <div className='p-5 overflow-y-auto text-sm text-white' style={{ maxHeight: '440px' }}>
-        {win.loading && <div className='flex items-center justify-center py-12'><div className='animate-spin rounded-full h-8 w-8 border-b-2 border-cyan-400' /><span className='ml-3 text-gray-400'>Loading...</span></div>}
-        {win.error && <div className='text-red-400'><div className='font-bold mb-2'>⚠️ Error:</div><div className='text-sm'>{win.error}</div></div>}
+      <div className='window-body overflow-y-auto text-sm text-white' style={{ maxHeight: '468px' }}>
+        {win.loading && (
+          <div className='flex items-center justify-center py-12'>
+            <div className='animate-spin rounded-full h-8 w-8 border-b-2 border-cyan-400' />
+            <span className='ml-3 text-gray-400'>Loading...</span>
+          </div>
+        )}
+        {win.error && (
+          <div className='text-red-400'>
+            <div className='font-bold mb-2'>⚠️ Error:</div>
+            <div className='text-sm'>{win.error}</div>
+          </div>
+        )}
         {win.data && (
-          <div>
-            <div className='mb-6 text-gray-200 leading-relaxed whitespace-pre-wrap'>{win.data.summaryMd}</div>
-            {win.data.items.length > 0 && (
-              <div className='border-t border-white/10 pt-4'>
-                <div className='text-cyan-400 text-xs mb-3'>📰 Articles:</div>
-                <div className='space-y-3'>
-                  {win.data.items.map((item, idx) => (
-                    <div key={idx}>
-                      <a href={item.url} target='_blank' rel='noopener noreferrer' className='text-blue-400 hover:underline block text-xs'>{item.title}</a>
-                      <div className='text-gray-500 text-[10px] mt-1'>{item.source} · {item.timeAgo}</div>
-                    </div>
+          <div className='yn-card'>
+            <header className='yn-header'>
+              <span className='yn-topic'>{win.topic}</span>
+              {win.data.tags && win.data.tags.length > 0 && (
+                <div className='yn-chips'>
+                  {win.data.tags.map((tag, idx) => (
+                    <span key={idx} className='yn-chip'>
+                      {tag.slice(0, 24)}
+                    </span>
                   ))}
                 </div>
-              </div>
+              )}
+            </header>
+
+            {win.data.insights && win.data.insights.length > 0 && (
+              <section className='yn-insights'>
+                <div className='yn-insights-title'>🎯 Key Insights</div>
+                <ul className='yn-insights-list'>
+                  {win.data.insights.slice(0, 5).map((insight, idx) => (
+                    <li key={idx}>{insight}</li>
+                  ))}
+                </ul>
+              </section>
+            )}
+
+            {win.data.summaryMd && (
+              <section className='yn-explainer'>
+                <ReactMarkdown
+                  components={{
+                    a: ({ node, ...props }) => (
+                      <a {...props} target='_blank' rel='noopener noreferrer' />
+                    ),
+                  }}
+                >
+                  {win.data.summaryMd}
+                </ReactMarkdown>
+              </section>
+            )}
+
+            {win.data.items.length > 0 && (
+              <section className='yn-articles'>
+                <div className='yn-section-title'>📰 Articles</div>
+                <ul>
+                  {win.data.items.map((item, idx) => (
+                    <li key={idx}>
+                      <a href={item.url} target='_blank' rel='noopener noreferrer'>
+                        {item.title}
+                      </a>
+                      <div className='yn-article-meta'>
+                        {item.source} · {item.timeAgo}
+                      </div>
+                    </li>
+                  ))}
+                </ul>
+              </section>
             )}
           </div>
         )}

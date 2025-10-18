@@ -6,7 +6,7 @@
 import type { APIRoute } from 'astro';
 import { fetchGoogleNews } from '../../server/rss';
 import { scoreItems } from '../../server/rank';
-import { buildDigest } from '../../server/digest';
+import { buildDigestStructured } from '../../server/digest';
 import { isRecent, timeAgo } from '../../server/time';
 
 export const POST: APIRoute = async ({ request }) => {
@@ -41,6 +41,8 @@ export const POST: APIRoute = async ({ request }) => {
             title: topic,
             type: 'topic',
             summaryMd: `No recent news found for "${topic}".`,
+            insights: [],
+            tags: [],
             items: [],
             meta: { usedOpenAI: false, recentWindowHours: 72 }
           });
@@ -70,22 +72,30 @@ export const POST: APIRoute = async ({ request }) => {
           },
         });
 
-        // 4) Build digest
+        // 4) Build digest with structured output
         const urls = ranked.slice(0, 12).map((i: any) => i.url).filter(Boolean);
         const titles = ranked.slice(0, 12).map((i: any) => ({ title: i.title, source: i.source }));
         const style = prefs?.search?.summaryStyle ?? 'short';
         const useOpenAI = prefs?.search?.useOpenAI !== false;
         
-        const digest = await buildDigest(urls, titles, style, useOpenAI);
+        const digest = await buildDigestStructured(urls, titles, style, useOpenAI, hours);
 
-        console.info('[YN api] panel', { topic, fetched: items.length, pool: pool.length, usedOpenAI: digest.usedOpenAI });
+        console.info('[YN api] panel', { 
+          topic, 
+          insights: digest.insights?.length, 
+          tags: digest.tags?.length, 
+          items: ranked.length,
+          usedOpenAI: digest.usedOpenAI 
+        });
 
-        // 5) Panel response
+        // 5) Panel response with structured fields
         const showN = prefs?.display?.linksToShow ?? 7;
         panels.push({
           title: topic,
           type: 'topic',
           summaryMd: digest.summaryMd,
+          insights: digest.insights || [],
+          tags: digest.tags || [],
           items: ranked.slice(0, showN).map((item: any) => ({
             ...item,
             timeAgo: timeAgo(item.pubDate),
@@ -98,6 +108,8 @@ export const POST: APIRoute = async ({ request }) => {
           title: topic,
           type: 'topic',
           summaryMd: `Error: ${err?.message || 'Failed to fetch'}`,
+          insights: [],
+          tags: [],
           items: [],
           meta: { usedOpenAI: false, recentWindowHours: 72 }
         });
