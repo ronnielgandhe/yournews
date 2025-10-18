@@ -1,0 +1,39 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <title>Test YourNews API</title>
+</head>
+<body>
+    <h1>Testing YourNews API Connection</h1>
+    <button onclick="testAPI()">Test API Call</button>
+    <pre id="output"></pre>
+    
+    <script>
+        async function testAPI() {
+            const output = document.getElementById('output');
+            output.textContent = 'Calling API...\n';
+            
+            try {
+                const response = await fetch('http://localhost:8000/search/panels', {
+                    method: 'POST',
+                    headers: {'Content-Type': 'application/json'},
+                    body: JSON.stringify({query: 'trump'})
+                });
+                
+                output.textContent += 'Response status: ' + response.status + '\n';
+                
+                const data = await response.json();
+                output.textContent += 'Response data:\n' + JSON.stringify(data, null, 2);
+                
+                console.log('✅ API call successful:', data);
+            } catch (error) {
+                output.textContent += 'ERROR: ' + error.message + '\n';
+                console.error('❌ API call failed:', error);
+            }
+        }
+        
+        // Auto-run on page load
+        window.onload = testAPI;
+    </script>
+</body>
+</html>

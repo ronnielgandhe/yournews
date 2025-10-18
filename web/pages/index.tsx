@@ -1,424 +1,288 @@
-import { useState, useEffect } from 'react';
+import { useState, useRef, useEffect } from 'react';
+import Head from 'next/head';
+
+interface WindowData {
+  id: string;
+  topic: string;
+  x: number;
+  y: number;
+  z: number;
+  minimized: boolean;
+  loading: boolean;
+  error: string | null;
+  data: {
+    summaryMd: string;
+    items: Array<{
+      title: string;
+      url: string;
+      source: string;
+      timeAgo: string;
+    }>;
+  } | null;
+}
+
+const API_BASE = process.env.NEXT_PUBLIC_API_BASE || 'http://localhost:8000';
 
 export default function Home() {
-  // State for personalized feed
-  const [feed, setFeed] = useState([]);
-  const [loading, setLoading] = useState(false);
-  const [error, setError] = useState('');
-  const userId = 'demo'; // Fixed demo user for MVP
-  const [keywords, setKeywords] = useState([]);
+  const [windows, setWindows] = useState<WindowData[]>([]);
+  const [searchInput, setSearchInput] = useState('');
+  const [maxZ, setMaxZ] = useState(1);
+  const inputRef = useRef<HTMLInputElement>(null);
 
-  // Legacy digest state (keep for backward compatibility with existing UI)
-  const [query, setQuery] = useState('');
-  const [digest, setDigest] = useState(null);
-  const [sources, setSources] = useState([]);
-  const [intentTags, setIntentTags] = useState([]);
-  const [timelineData, setTimelineData] = useState(null);
-  const [entitiesData, setEntitiesData] = useState(null);
-  const [summaryLevel, setSummaryLevel] = useState('short');
-  const [summaryCache] = useState(() => new Map());
-  const summaryLevelsEnabled = (typeof process !== 'undefined' && process.env && process.env.NEXT_PUBLIC_AI_SUMMARY_LEVELS_ENABLED === 'true') || (typeof window !== 'undefined' && (window as any).NEXT_PUBLIC_AI_SUMMARY_LEVELS_ENABLED === 'true');
-  const [showSources, setShowSources] = useState(false);
-  const [viewMode, setViewMode] = useState('feed'); // 'feed' or 'digest'
-
-  // Load personalized feed on mount
   useEffect(() => {
-    loadFeed();
-  }, []);
-
-  const loadFeed = async () => {
-    setLoading(true);
-    setError('');
-    try {
-      const res = await fetch(`/api/feed?userId=${userId}`);
-      if (!res.ok) {
-        const text = await res.text();
-        throw new Error(`Failed to load feed: ${text.slice(0, 200)}`);
+    const handleKeyDown = (e: KeyboardEvent) => {
+      if ((e.metaKey || e.ctrlKey) && e.key === 'k') {
+        e.preventDefault();
+        inputRef.current?.focus();
       }
-      const data = await res.json();
-      setFeed(data.items || []);
-      setKeywords(data.keywords || []);
-    } catch (e) {
-      console.error('Load feed error:', e);
-      setError(String(e && (e as any).message ? (e as any).message : e));
-    } finally {
-      setLoading(false);
-    }
+      if (e.key === 'Escape' && windows.length > 0) {
+        const frontWindow = windows.reduce((prev, curr) => curr.z > prev.z ? curr : prev);
+        closeWindow(frontWindow.id);
+      }
+    };
+    window.addEventListener('keydown', handleKeyDown);
+    return () => window.removeEventListener('keydown', handleKeyDown);
+  }, [windows]);
+
+  const splitAndNormalize = (input: string): string[] => {
+    return input.split(/,| and /i).map(s => s.trim()).filter(s => s.length > 0);
   };
 
-  const handleReadArticle = async (article) => {
+  const createPanel = async (topic: string, index: number) => {
+    const windowId = `${topic}-${Date.now()}-${index}`;
+    const newWindow: WindowData = {
+      id: windowId, topic, x: 120 + index * 30, y: 120 + index * 30, z: maxZ + index,
+      minimized: false, loading: true, error: null, data: null,
+    };
+    setWindows(prev => [...prev, newWindow]);
+    setMaxZ(prev => prev + index + 1);
+
     try {
-      // Track click
-      await fetch('/api/track', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ userId, articleId: article._id }),
+      const response = await fetch(`${API_BASE}/search/panels`, {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ query: topic }),
       });
-      
-      // Open article in new tab
-      window.open(article.url, '_blank');
-      
-      // Reload feed to get updated personalization
-      setTimeout(() => loadFeed(), 500);
-    } catch (e) {
-      console.error('Track click error:', e);
-    }
-  };
-
-  // Render minimal markdown (headings, bullets, links)
-  const renderMarkdown = (md) => {
-    if (!md) return null;
-    const html = md
-      .replace(/^###?\s*(.*)$/gm, '<strong>$1</strong>')
-      .replace(/^##\s*(.*)$/gm, '<h4>$1</h4>')
-      .replace(/^\-\s+(.*)$/gm, '<li>$1</li>')
-      .replace(/\n{2,}/g, '<br/><br/>')
-      .replace(/\[(.*?)\]\((.*?)\)/g, '<a href="$2" target="_blank" rel="noreferrer">$1</a>');
-    const withUl = html.replace(/((?:<li>[\s\S]*?<\/li>\s*)+)/g, (m) => `<ul>${m}</ul>`);
-    return { __html: withUl };
-  };
-
-  // Core flow: fetch search results (Google RSS via Next proxy /api/search-all), take top links, send to /api/digest-from-links
-  const buildDigest = async () => {
-    setError('');
-    setDigest(null);
-    setSources([]);
-    setShowSources(false);
-    if (!query || !query.trim()) return setError('Please enter a query');
-    setLoading(true);
-    try {
-      // 1) fetch headlines via the server proxy
-  const sRes = await fetch(`/api/search-all?q=${encodeURIComponent(query.trim())}`);
-      if (!sRes.ok) throw new Error('Search failed');
-      const sData = await sRes.json();
-      const google = Array.isArray(sData.google) ? sData.google : [];
-      // pick top 5 unique URLs
-      const urls = [];
-      const seen = new Set();
-      for (const it of google) {
-        const u = it && it.url;
-        if (!u) continue;
-        if (seen.has(u)) continue;
-        seen.add(u);
-        urls.push(u);
-        if (urls.length >= 5) break;
-      }
-      if (urls.length === 0) {
-        setError('No source links found for that query');
-        setLoading(false);
-        return;
-      }
-
-      // 2) If multi-query AI is enabled client-side, call the multi-digest proxy which will ask AI to split queries
-      const multiEnabled = (typeof process !== 'undefined' && process.env && process.env.NEXT_PUBLIC_AI_MULTI_QUERY_ENABLED === 'true') || (typeof window !== 'undefined' && (window as any).__NEXT_DATA__ && (window as any).__NEXT_DATA__.env && (window as any).__NEXT_DATA__.env.NEXT_PUBLIC_AI_MULTI_QUERY_ENABLED === 'true') || (typeof window !== 'undefined' && (window as any).NEXT_PUBLIC_AI_MULTI_QUERY_ENABLED === 'true');
-      if (multiEnabled) {
-        const mdRes = await fetch('/api/multi-digest', {
-          method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ query: query.trim(), style: 'short' })
-        });
-        if (!mdRes.ok) throw new Error('Multi-digest failed');
-        const mdJson = await mdRes.json();
-        // mdJson: { intentTags: [], sections: [{query, markdown, articles}] }
-        const combinedMd = (mdJson.sections || []).map(s => s.markdown || `## ${s.query}`).join('\n\n');
-        setDigest({ summary_md: combinedMd });
-        if (mdJson.intentTags) setIntentTags(mdJson.intentTags || []);
-        if (mdJson.timeline) setTimelineData(mdJson.timeline);
-        if (mdJson.entities) setEntitiesData(mdJson.entities);
-        // flatten sources grouped by section for the View Sources UI
-  const grouped = [];
-        (mdJson.sections || []).forEach((s) => {
-          const urls = (s.articles || []).map(a => a.url).filter(Boolean);
-          grouped.push({ label: s.query, urls });
-        });
-        setSources(grouped);
-      
-      } else {
-        // 2) request a digest from the server (will use OpenAI if configured, otherwise return local fallback)
-        const dRes = await fetch('/api/digest-from-links', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ topic: query.trim(), links: urls, style: 'short' })
-        });
-        if (!dRes.ok) {
-          const txt = await dRes.text();
-          throw new Error('Digest failed: ' + txt.slice(0, 200));
+      if (!response.ok) throw new Error(`API returned ${response.status}`);
+      const result = await response.json();
+      const panel = result.panels?.[0];
+      if (!panel) throw new Error('No panel data received');
+      setWindows(prev => prev.map(w => w.id === windowId ? {
+        ...w, loading: false, data: {
+          summaryMd: panel.summaryMd || '',
+          items: (panel.items || []).slice(0, 7),
         }
-        const dData = await dRes.json();
-        // Keep the raw markdown and the source list for optional viewing
-        setDigest({ summary_md: dData.summary_md || '' });
-        setSources(urls);
-      }
-    } catch (e) {
-      console.error('Build digest error', e);
-      setError(String(e && e.message ? e.message : e));
-    } finally {
-      setLoading(false);
+      } : w));
+    } catch (err) {
+      setWindows(prev => prev.map(w => w.id === windowId
+        ? { ...w, loading: false, error: err instanceof Error ? err.message : 'Failed' } : w));
     }
   };
 
-  // NOTE: removed UI and state for grouped results, AI Flow chips, style selector, extract, per-headline checkboxes,
-  // duplicated digest builders, and advanced controls. Those features were removed to simplify the UX and keep
-  // a single linear flow: type query -> Build Digest -> view digest -> optionally view sources. The underlying
-  // server endpoints (proxied as /api/search-all and /api/digest-from-links) remain intact and are used above.
+  const handleSearch = (e: React.FormEvent) => {
+    e.preventDefault();
+    const trimmed = searchInput.trim();
+    if (trimmed === 'clear') { setWindows([]); setSearchInput(''); return; }
+    if (!trimmed) return;
+    splitAndNormalize(trimmed).forEach((topic, idx) => createPanel(topic, idx));
+    setSearchInput('');
+  };
 
-  return (
-    <div style={{ minHeight: '100vh', padding: '3rem 1rem', fontFamily: 'system-ui, -apple-system, sans-serif' }}>
-      <div style={{ maxWidth: 760, margin: '0 auto' }}>
-        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '1rem' }}>
-          <h1 style={{ margin: 0, fontSize: '1.25rem' }}>YourNews</h1>
-          <div style={{ display: 'flex', gap: '0.5rem' }}>
-            <button 
-              onClick={() => setViewMode('feed')}
-              style={{ 
-                padding: '0.35rem 0.75rem', 
-                borderRadius: 6, 
-                border: viewMode === 'feed' ? '2px solid #0b74de' : '1px solid #ddd',
-                background: viewMode === 'feed' ? '#e8f6ff' : 'white',
-                cursor: 'pointer',
-                fontSize: '0.9rem',
-              }}
-            >
-              Feed
-            </button>
-            <button 
-              onClick={() => setViewMode('digest')}
-              style={{ 
-                padding: '0.35rem 0.75rem', 
-                borderRadius: 6, 
-                border: viewMode === 'digest' ? '2px solid #0b74de' : '1px solid #ddd',
-                background: viewMode === 'digest' ? '#e8f6ff' : 'white',
-                cursor: 'pointer',
-                fontSize: '0.9rem',
-              }}
-            >
-              Search
-            </button>
-          </div>
+  const closeWindow = (id: string) => setWindows(prev => prev.filter(w => w.id !== id));
+  const toggleMinimize = (id: string) => setWindows(prev => prev.map(w => w.id === id ? { ...w, minimized: !w.minimized } : w));
+  const bringToFront = (id: string) => { setMaxZ(prev => prev + 1); setWindows(prev => prev.map(w => w.id === id ? { ...w, z: maxZ + 1 } : w)); };
+  const moveWindow = (id: string, dx: number, dy: number) => setWindows(prev => prev.map(w => w.id === id ? { ...w, x: Math.max(0, w.x + dx), y: Math.max(0, w.y + dy) } : w));
+
+  return (<>
+    <Head><title>YourNews</title></Head>
+    <div className="fixed inset-0 bg-cover bg-center" style={{ backgroundImage: 'url(/mac-background1.jpg)' }}>
+      {/* macOS Menu Bar */}
+      <div className="h-6 bg-gradient-to-b from-gray-100/90 to-gray-50/80 backdrop-blur-xl border-b border-gray-300/50 flex items-center px-3 text-xs font-medium shadow-sm">
+        <div className="flex items-center space-x-3 text-gray-800">
+          <span className="font-bold">🗞️</span>
+          <span className="font-semibold">YourNews</span>
+          <span className="cursor-default hover:bg-blue-500/20 px-2 py-0.5 rounded">File</span>
+          <span className="cursor-default hover:bg-blue-500/20 px-2 py-0.5 rounded">Edit</span>
+          <span className="cursor-default hover:bg-blue-500/20 px-2 py-0.5 rounded">View</span>
         </div>
-
-        {viewMode === 'feed' && (
-          <>
-            {keywords.length > 0 && (
-              <div style={{ marginBottom: '1rem', padding: '0.5rem', background: '#f0f9ff', borderRadius: 6, border: '1px solid #bfdbfe' }}>
-                <div style={{ fontSize: '0.85rem', color: '#1e3a8a', marginBottom: '0.3rem' }}>
-                  <strong>Personalized for you:</strong>
-                </div>
-                <div style={{ display: 'flex', gap: '0.4rem', flexWrap: 'wrap' }}>
-                  {keywords.map((kw, i) => (
-                    <span key={i} style={{ background: '#dbeafe', color: '#1e40af', padding: '0.2rem 0.5rem', borderRadius: 12, fontSize: '0.8rem' }}>
-                      {kw}
-                    </span>
-                  ))}
-                </div>
+        <div className="ml-auto flex items-center space-x-3 text-gray-700">
+          <span>{new Date().toLocaleDateString('en-US', { weekday: 'short', month: 'short', day: 'numeric' })}</span>
+          <span>{new Date().toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit' })}</span>
+        </div>
+      </div>
+      {/* Main Terminal Window - centered */}
+      <div className="flex items-center justify-center" style={{ height: 'calc(100vh - 120px)', paddingTop: '60px' }}>
+        <div className="w-full max-w-2xl mx-4">
+          <div className="bg-gray-900/95 backdrop-blur-2xl rounded-xl shadow-2xl overflow-hidden border border-gray-700/50">
+            {/* Terminal Title Bar */}
+            <div className="h-8 bg-gradient-to-b from-gray-300 to-gray-200 border-b border-gray-400/50 flex items-center px-3 select-none">
+              <div className="flex space-x-1.5">
+                <div className="w-3 h-3 rounded-full bg-red-500 shadow-sm" />
+                <div className="w-3 h-3 rounded-full bg-yellow-500 shadow-sm" />
+                <div className="w-3 h-3 rounded-full bg-green-500 shadow-sm" />
               </div>
-            )}
-
-            {error && <div style={{ color: '#b00020', marginBottom: '0.75rem' }}>{error}</div>}
-
-            {loading ? (
-              <div style={{ textAlign: 'center', padding: '2rem', color: '#666' }}>Loading feed...</div>
-            ) : feed.length === 0 ? (
-              <div style={{ textAlign: 'center', padding: '2rem', color: '#666' }}>
-                <p>No articles yet.</p>
-                <p style={{ fontSize: '0.9rem' }}>Run the seed command to populate your feed:</p>
-                <code style={{ background: '#f5f5f5', padding: '0.5rem', borderRadius: 4, display: 'inline-block' }}>
-                  curl http://localhost:8000/seed
-                </code>
-              </div>
-            ) : (
-              <>
-                <div style={{ marginBottom: '0.5rem', color: '#666', fontSize: '0.9rem' }}>
-                  {feed.length} articles • Click to read and personalize your feed
-                </div>
-                <div style={{ display: 'flex', flexDirection: 'column', gap: '1rem' }}>
-                  {feed.map((article) => (
-                    <div 
-                      key={article._id}
-                      style={{ 
-                        border: '1px solid #e5e7eb', 
-                        borderRadius: 8, 
-                        padding: '1rem',
-                        background: 'white',
-                        transition: 'box-shadow 0.2s',
-                      }}
-                    >
-                      <h3 style={{ margin: 0, marginBottom: '0.5rem', fontSize: '1rem', lineHeight: 1.4 }}>
-                        {article.title}
-                      </h3>
-                      <div style={{ fontSize: '0.85rem', color: '#666', marginBottom: '0.75rem' }}>
-                        {article.source} • {new Date(article.pubDate).toLocaleDateString()}
-                      </div>
-                      <p style={{ margin: 0, marginBottom: '0.75rem', fontSize: '0.9rem', color: '#444', lineHeight: 1.5 }}>
-                        {(article.summary || '').slice(0, 200)}
-                        {article.summary && article.summary.length > 200 ? '...' : ''}
-                      </p>
-                      <button
-                        onClick={() => handleReadArticle(article)}
-                        style={{
-                          padding: '0.4rem 0.8rem',
-                          borderRadius: 6,
-                          border: 'none',
-                          background: '#0b74de',
-                          color: 'white',
-                          cursor: 'pointer',
-                          fontSize: '0.85rem',
-                        }}
-                      >
-                        Read →
-                      </button>
-                    </div>
-                  ))}
-                </div>
-              </>
-            )}
-
-            <div style={{ marginTop: '2rem', padding: '1rem', background: '#fef3c7', borderRadius: 6, border: '1px solid #fbbf24' }}>
-              <div style={{ fontSize: '0.9rem', color: '#78350f' }}>
-                <strong>💡 Tip:</strong> Click a few articles—your feed adapts to your interests after 3 clicks!
+              <div className="flex-1 text-center text-xs font-medium text-gray-700">
+                YourNews Terminal
               </div>
             </div>
-          </>
-        )}
 
-        {viewMode === 'digest' && (
-          <>
-            <h2 style={{ margin: 0, marginBottom: '1rem', fontSize: '1.1rem' }}>Search & Digest</h2>
+            {/* Terminal Body */}
+            <div className="p-5 font-mono text-sm">
+              <div className="text-green-400 mb-3">
+                <div className="text-sm mb-1.5 font-semibold">YourNews Terminal v1.0</div>
+                <div className="text-gray-400 text-xs mt-2 leading-relaxed">
+                  Search for news topics separated by commas:<br/>
+                  <span className="text-cyan-400">trump, climate change, switzerland</span>
+                </div>
+                <div className="text-gray-500 text-xs mt-2">
+                  <span className="text-yellow-400">Cmd+K</span> focus • <span className="text-yellow-400">Esc</span> close • <span className="text-yellow-400">clear</span> close all
+                </div>
+              </div>
 
-        <div style={{ display: 'flex', gap: '0.75rem', alignItems: 'center', marginBottom: '0.75rem' }}>
-          <input
-            aria-label="Search news"
-            type="text"
-            value={query}
-            onChange={e => setQuery(e.target.value)}
-            placeholder="Search news..."
-            style={{ flex: 1, fontSize: '1rem', padding: '0.5rem', borderRadius: 6, border: '1px solid #ddd' }}
-            onKeyDown={e => { if (e.key === 'Enter') { e.preventDefault(); buildDigest(); } }}
-          />
-          <button
-            onClick={buildDigest}
-            disabled={loading}
-            style={{ padding: '0.5rem 1rem', borderRadius: 6, border: 'none', background: '#0b74de', color: 'white', cursor: loading ? 'not-allowed' : 'pointer' }}
-          >
-            {loading ? 'Building…' : 'Build Digest'}
-          </button>
-        </div>
+              <form onSubmit={handleSearch} className="flex items-center mt-4 bg-gray-800/50 rounded px-3 py-2 border border-gray-700">
+                <span className="text-cyan-400 mr-2 font-bold">$</span>
+                <input ref={inputRef} type="text" value={searchInput} onChange={e => setSearchInput(e.target.value)}
+                  placeholder="type anything — get YOUR news" 
+                  className="flex-1 bg-transparent text-white outline-none placeholder-gray-500 caret-cyan-400" 
+                  autoFocus />
+              </form>
 
-        {error && <div style={{ color: '#b00020', marginBottom: '0.75rem' }}>{error}</div>}
-
-        {digest && (
-          <div style={{ border: '1px solid #e6eef9', background: '#f8fbff', padding: '0.85rem', borderRadius: 8, marginBottom: '1rem' }}>
-            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '0.5rem' }}>
-              <div style={{ fontSize: '0.95rem', color: '#073b6b' }}><strong>Digest</strong></div>
-              {/* intent tags show as tiny chips when returned */}
-              {intentTags && intentTags.length > 0 && (
-                <div style={{ display: 'flex', gap: '0.35rem' }}>
-                  {intentTags.map((t, i) => (
-                    <span key={i} style={{ background: '#e8f1ff', color: '#063663', padding: '0.15rem 0.45rem', borderRadius: 12, fontSize: '0.75rem' }}>{t}</span>
-                  ))}
+              {windows.length > 0 && (
+                <div className="mt-3 text-gray-500 text-xs">
+                  ▸ Active: {windows.filter(w => !w.minimized).length} window(s)
                 </div>
               )}
             </div>
-            <div style={{ color: '#222' }} dangerouslySetInnerHTML={renderMarkdown(digest.summary_md)} />
-
-            {/* Summary level control (short/medium/long) */}
-            {summaryLevelsEnabled && (
-              <div style={{ marginTop: '0.6rem', display: 'flex', gap: '0.5rem', alignItems: 'center' }}>
-                <div style={{ fontSize: '0.85rem', color: '#333' }}>Summary:</div>
-                {['short','medium','long'].map(l => (
-                  <button key={l} onClick={async () => {
-                    try {
-                      setLoading(true);
-                      setError('');
-                      setSummaryLevel(l);
-                      const key = `${digest.summary_md}||${l}`;
-                      if (summaryCache.has(key)) {
-                        setDigest({ summary_md: summaryCache.get(key) });
-                        setLoading(false);
-                        return;
-                      }
-                      const r = await fetch('/api/ai/summarize', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ digestMd: digest.summary_md, level: l }) });
-                      if (!r.ok) {
-                        const txt = await r.text().catch(() => '');
-                        throw new Error('Summarize failed: ' + txt.slice(0,200));
-                      }
-                      const j = await r.json();
-                      if (j && j.summary) {
-                        summaryCache.set(key, j.summary);
-                        setDigest({ summary_md: j.summary });
-                      } else {
-                        throw new Error('Invalid summarize response');
-                      }
-                    } catch (e) {
-                      setError(String(e && e.message ? e.message : e));
-                    } finally { setLoading(false); }
-                  }} style={{ padding: '0.25rem 0.5rem', borderRadius: 6, border: summaryLevel===l ? '1px solid #0b74de' : '1px solid #ddd', background: summaryLevel===l ? '#e8f6ff' : 'white', cursor: 'pointer' }}>{l}</button>
-                ))}
-              </div>
-            )}
           </div>
-        )}
+        </div>
+      </div>
+      {/* Draggable News Windows */}
+      {windows.map(win => (
+        <DraggableWindow key={win.id} window={win} onClose={closeWindow} onMinimize={toggleMinimize} onFocus={bringToFront} onMove={moveWindow} />
+      ))}
 
-        {digest && (
-          <div style={{ textAlign: 'left' }}>
-            <button onClick={() => setShowSources(s => !s)} style={{ background: 'transparent', border: 'none', color: '#0b74de', cursor: 'pointer', padding: 0 }}>
-              {showSources ? 'Hide Sources' : 'View Sources'}
-            </button>
-            {showSources && (
-              <div style={{ marginTop: '0.5rem' }}>
-                {/* timeline if present */}
-                {timelineData && (
-                  <div style={{ marginBottom: '0.6rem', padding: '0.5rem', background: '#fff', border: '1px solid #eef6ff', borderRadius: 6 }}>
-                    <div style={{ fontSize: '0.85rem', color: '#333', marginBottom: '0.25rem' }}><strong>Timeline</strong></div>
-                    <ol style={{ paddingLeft: '1.1rem', margin: 0 }}>
-                      {(timelineData.items || []).map((it, i) => (
-                        <li key={i} style={{ marginBottom: '0.3rem' }}><strong>{it.date}</strong>: {it.text}</li>
-                      ))}
-                    </ol>
-                  </div>
-                )}
-
-                {/* entities if present */}
-                {entitiesData && entitiesData.length > 0 && (
-                  <div style={{ marginBottom: '0.6rem' }}>
-                    <div style={{ fontSize: '0.85rem', color: '#333', marginBottom: '0.25rem' }}><strong>Entities</strong></div>
-                    <div style={{ display: 'flex', gap: '0.5rem', flexWrap: 'wrap' }}>
-                      {entitiesData.map((e, i) => (
-                        <span key={i} style={{ background: '#fff7e6', color: '#663c00', padding: '0.2rem 0.45rem', borderRadius: 8, fontSize: '0.8rem' }}>{e.name} ({e.type})</span>
-                      ))}
-                    </div>
-                  </div>
-                )}
-                {/* sources may be an array of groups {label, urls} or a flat array of urls */}
-                {Array.isArray(sources) && sources.length > 0 && sources[0] && sources[0].label ? (
-                  <div>
-                    {sources.map((g, gi) => (
-                      <div key={gi} style={{ marginBottom: '0.6rem' }}>
-                        <div style={{ fontSize: '0.85rem', color: '#333', marginBottom: '0.2rem' }}><strong>{g.label}</strong></div>
-                        <ul style={{ paddingLeft: '1.1rem' }}>
-                          {(g.urls || []).map((u, i) => (
-                            <li key={i} style={{ marginBottom: '0.35rem' }}><a href={u} target="_blank" rel="noreferrer" style={{ color: '#0b74de' }}>{u}</a></li>
-                          ))}
-                        </ul>
-                      </div>
-                    ))}
-                  </div>
-                ) : (
-                  <ul style={{ marginTop: '0.5rem', paddingLeft: '1.1rem' }}>
-                    {sources.map((u, i) => (
-                      <li key={i} style={{ marginBottom: '0.4rem' }}>
-                        <a href={u} target="_blank" rel="noreferrer" style={{ color: '#0b74de' }}>{u}</a>
-                      </li>
-                    ))}
-                  </ul>
-                )}
-              </div>
-            )}
-          </div>
-        )}
-
-            <div style={{ marginTop: '2rem', color: '#666', fontSize: '0.9rem' }}>
-              Legacy search & digest interface. The new personalized feed is on the "Feed" tab.
+      {/* macOS Dock */}
+      <div className="fixed bottom-2 left-0 right-0 flex justify-center pointer-events-none">
+        <div className="bg-white/10 backdrop-blur-3xl rounded-2xl px-2 py-1.5 border border-white/20 shadow-2xl pointer-events-auto">
+          <div className="flex items-end space-x-1">
+            {/* Minimized windows in dock */}
+            {windows.filter(w => w.minimized).map(win => (
+              <button
+                key={win.id}
+                onClick={() => toggleMinimize(win.id)}
+                className="w-12 h-12 bg-gradient-to-b from-gray-600 to-gray-800 rounded-lg border border-white/30 flex items-center justify-center text-white hover:scale-110 transition-transform shadow-lg overflow-hidden group relative"
+                title={`Restore: ${win.topic}`}
+              >
+                <span className="text-[10px] font-mono truncate px-1 group-hover:hidden">{win.topic.slice(0, 6)}</span>
+                <span className="text-lg hidden group-hover:block">📰</span>
+              </button>
+            ))}
+            {/* YourNews icon (always visible) */}
+            <div className="w-14 h-14 bg-gradient-to-b from-blue-500 to-blue-700 rounded-xl border border-white/30 flex items-center justify-center shadow-lg transform hover:scale-110 transition-all">
+              <span className="text-2xl">🗞️</span>
             </div>
-          </>
+          </div>
+        </div>
+      </div>
+    </div>
+  </>);
+}
+
+interface DraggableWindowProps { window: WindowData; onClose: (id: string) => void; onMinimize: (id: string) => void; onFocus: (id: string) => void; onMove: (id: string, dx: number, dy: number) => void; }
+
+function DraggableWindow({ window: win, onClose, onMinimize, onFocus, onMove }: DraggableWindowProps) {
+  const [isDragging, setIsDragging] = useState(false);
+  const [dragStart, setDragStart] = useState({ x: 0, y: 0 });
+
+  const handleMouseDown = (e: React.MouseEvent) => {
+    if ((e.target as HTMLElement).closest('.window-controls')) return;
+    setIsDragging(true);
+    setDragStart({ x: e.clientX, y: e.clientY });
+    onFocus(win.id);
+  };
+
+  useEffect(() => {
+    if (!isDragging) return;
+    const handleMouseMove = (e: MouseEvent) => { onMove(win.id, e.clientX - dragStart.x, e.clientY - dragStart.y); setDragStart({ x: e.clientX, y: e.clientY }); };
+    const handleMouseUp = () => setIsDragging(false);
+    document.addEventListener('mousemove', handleMouseMove);
+    document.addEventListener('mouseup', handleMouseUp);
+    return () => { document.removeEventListener('mousemove', handleMouseMove); document.removeEventListener('mouseup', handleMouseUp); };
+  }, [isDragging, dragStart, win.id, onMove]);
+
+  if (win.minimized) return null;
+
+  return (
+    <div className="fixed bg-gray-900/95 backdrop-blur-2xl rounded-xl border border-gray-700/50 shadow-2xl overflow-hidden" 
+      style={{ left: win.x, top: win.y, zIndex: win.z, width: '650px', maxHeight: '550px', cursor: isDragging ? 'grabbing' : 'default' }} 
+      onClick={() => onFocus(win.id)}>
+      {/* macOS Title Bar */}
+      <div className="h-8 bg-gradient-to-b from-gray-300 to-gray-200 border-b border-gray-400/50 flex items-center px-3 cursor-grab active:cursor-grabbing select-none shadow-sm"
+        onMouseDown={handleMouseDown}>
+        <div className="flex space-x-1.5 window-controls">
+          <button onClick={e => { e.stopPropagation(); onClose(win.id); }} 
+            className="w-3 h-3 rounded-full bg-red-500 hover:bg-red-600 transition shadow-sm flex items-center justify-center group" 
+            title="Close">
+            <span className="text-[8px] text-red-900 opacity-0 group-hover:opacity-100 font-bold">×</span>
+          </button>
+          <button onClick={e => { e.stopPropagation(); onMinimize(win.id); }} 
+            className="w-3 h-3 rounded-full bg-yellow-500 hover:bg-yellow-600 transition shadow-sm flex items-center justify-center group" 
+            title="Minimize">
+            <span className="text-[8px] text-yellow-900 opacity-0 group-hover:opacity-100 font-bold">−</span>
+          </button>
+          <div className="w-3 h-3 rounded-full bg-green-500 shadow-sm" title="Fullscreen (disabled)" />
+        </div>
+        <div className="flex-1 text-center text-xs font-medium text-gray-700 truncate px-4">{win.topic}</div>
+      </div>
+      {/* Window Content */}
+      <div className="p-5 overflow-y-auto text-sm" style={{ maxHeight: '490px', backgroundColor: '#1a1a1a' }}>
+        {win.loading && (
+          <div className="flex flex-col items-center justify-center py-16">
+            <div className="animate-spin rounded-full h-10 w-10 border-b-2 border-cyan-400 mb-3" />
+            <span className="text-gray-400 font-mono text-xs">Fetching news...</span>
+          </div>
+        )}
+
+        {win.error && (
+          <div className="text-red-400 font-mono bg-red-500/10 border border-red-500/20 rounded-lg p-4">
+            <div className="font-bold mb-2 flex items-center">
+              <span className="text-lg mr-2">⚠️</span> Error
+            </div>
+            <div className="text-sm">{win.error}</div>
+            <div className="text-xs text-gray-500 mt-2">Backend: {API_BASE}</div>
+          </div>
+        )}
+
+        {win.data && (
+          <div>
+            {/* AI Summary */}
+            <div className="mb-6 text-gray-200 leading-relaxed whitespace-pre-wrap font-sans text-sm">
+              {win.data.summaryMd}
+            </div>
+
+            {/* Article Links */}
+            {win.data.items.length > 0 && (
+              <div className="border-t border-gray-700 pt-4 mt-4">
+                <div className="text-cyan-400 font-mono text-xs mb-3 font-semibold flex items-center">
+                  <span className="mr-2">📰</span> Related Articles
+                </div>
+                <div className="space-y-3">
+                  {win.data.items.map((item, idx) => (
+                    <div key={idx} className="group">
+                      <a href={item.url} target="_blank" rel="noopener noreferrer" 
+                        className="text-blue-400 hover:text-blue-300 hover:underline block text-xs leading-snug font-medium">
+                        {item.title}
+                      </a>
+                      <div className="text-gray-500 mt-1 text-[10px] font-mono flex items-center space-x-2">
+                        <span>{item.source}</span>
+                        <span>•</span>
+                        <span>{item.timeAgo}</span>
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              </div>
+            )}
+          </div>
         )}
       </div>
     </div>

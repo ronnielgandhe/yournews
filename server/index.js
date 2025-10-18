@@ -85,6 +85,7 @@ app.use('/ingest', require('./src/routes/ingest'));
 app.use('/track', require('./src/routes/track'));
 app.use('/feed', require('./src/routes/feed'));
 app.use('/seed', require('./src/routes/seed'));
+app.use('/search/panels', require('./src/routes/search-panels'));
 
 // Connect to MongoDB and start server
 (async () => {
@@ -265,31 +266,84 @@ app.post('/ai/extract', async (req, res) => {
 
 // --- digest-from-links: local fallback summarizer that fetches titles and returns markdown
 app.post('/ai/digest-from-links', async (req, res) => {
-  const { topic, links, style } = req.body || {};
-  console.log('/ai/digest-from-links called, topic=', topic, 'links_count=', Array.isArray(links) ? links.length : 0, 'style=', style, 'OPENAI present=', !!process.env.OPENAI_API_KEY);
-  if (!links || !Array.isArray(links) || links.length === 0) return res.status(400).json({ error: 'Missing links' });
+  const { topic, links, articles, style } = req.body || {};
+  console.log('/ai/digest-from-links called, topic=', topic, 'links_count=', Array.isArray(links) ? links.length : 0, 'articles_count=', Array.isArray(articles) ? articles.length : 0, 'style=', style, 'OPENAI present=', !!process.env.OPENAI_API_KEY);
+  
+  // Support both old format (links) and new format (articles with content)
+  if (!articles && (!links || !Array.isArray(links) || links.length === 0)) {
+    return res.status(400).json({ error: 'Missing articles or links' });
+  }
+
   try {
-    const fetchTitle = async (u) => {
-      try {
-        const r = await fetch(u, { redirect: 'follow' });
-        const text = await r.text();
-        const m = text.match(/<title>([^<]*)<\/?title>/i);
-        return (m && m[1]) ? m[1].trim() : u;
-      } catch (e) {
-        return u;
+    let pairs = [];
+    
+    // If articles provided with content, use them directly
+    if (articles && Array.isArray(articles) && articles.length > 0) {
+      pairs = articles.slice(0, 10).map(a => ({
+        url: a.url,
+        title: a.title || a.url,
+        content: a.content || '',
+        source: a.source || ''
+      }));
+    } 
+    // Fallback to old behavior: fetch titles from URLs
+    else if (links && Array.isArray(links)) {
+      const fetchTitle = async (u) => {
+        try {
+          const r = await fetch(u, { redirect: 'follow', timeout: 5000 });
+          const text = await r.text();
+          const m = text.match(/<title>([^<]*)<\/?title>/i);
+          return (m && m[1]) ? m[1].trim() : u;
+        } catch (e) {
+          return u;
+        }
+      };
+      pairs = await Promise.all(links.slice(0,5).map(async (u) => ({ 
+        url: u, 
+        title: await fetchTitle(u),
+        content: '',
+        source: ''
+      })));
+    }
+    
+    // Build text for OpenAI with titles AND content snippets
+    const listText = pairs.map((p, i) => {
+      let text = `${i+1}. "${p.title}"`;
+      if (p.content && p.content.length > 10) {
+        // Include first 200 chars of content for context
+        const snippet = p.content.slice(0, 200).replace(/\n/g, ' ').trim();
+        text += `\n   Summary: ${snippet}${p.content.length > 200 ? '...' : ''}`;
       }
-    };
-    const pairs = await Promise.all(links.slice(0,5).map(async (u) => ({ url: u, title: await fetchTitle(u) })));
-    // Attempt OpenAI generation first (if key present), otherwise fall back to local list-based MD
-    const listText = pairs.map(p => `- ${p.title} — ${p.url}`).join('\n');
+      if (p.source) {
+        text += `\n   Source: ${p.source}`;
+      }
+      text += `\n   URL: ${p.url}`;
+      return text;
+    }).join('\n\n');
+    
     const mdLocal = `### ${topic || 'Digest'}\n\nStyle: ${style || 'short'}\n\n` + pairs.map(p => `- [${p.title}](${p.url})`).join('\n');
     if (process.env.OPENAI_API_KEY) {
       try {
-          const prompt = `Write a concise digest in markdown for the topic: ${topic || 'Topic'}.\nStyle: ${style || 'short'}.\nInclude a short lead sentence, then 3-6 bullet points summarizing the items below. Use the title and URL as needed. Output only markdown.\n\nItems:\n${listText}`;
+          const prompt = `Your job is to summarize the following news articles into a clean, readable digest for the user.
+
+Topic: "${topic || 'Topic'}"
+
+Articles to summarize:
+${listText}
+
+Instructions:
+- Read the article titles carefully
+- Write a brief summary (2-3 sentences) of what these articles are about
+- Then list 4-7 bullet points covering the main stories from THESE SPECIFIC ARTICLES
+- Each bullet should summarize what the article says (use the actual article title as your source)
+- Keep it concise and readable
+- Start with "# ${topic || 'Topic'}"
+
+Output ONLY markdown. Style: ${style || 'short'}.`;
           console.log('OpenAI: sending prompt for digest-from-links, topic=', topic, 'style=', style);
           // mask long prompt in logs but show length
           console.log('OpenAI: prompt length=', prompt.length);
-          const reply = await callOpenAIChat(prompt, 'Summarize meaning and impact. Do not copy headlines. Provide concise analysis of what\'s happening and why it matters.');
+          const reply = await callOpenAIChat(prompt, 'Summarize the provided articles. Do not make up information. Only write about what is mentioned in the article titles.');
           console.log('OpenAI: reply length=', reply ? reply.length : 0);
           if (reply && reply.length > 0) {
             console.log('OpenAI: returning AI-generated digest for topic=', topic);

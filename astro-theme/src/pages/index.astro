@@ -1,0 +1,46 @@
+---
+export const prerender = false;
+import { getImage } from 'astro:assets';
+import Layout from '../layouts/Layout.astro';
+import AppLayout from '../layouts/AppLayout';
+import macBackground1 from '../assets/images/mac-background1.jpg';
+import macBackground2 from '../assets/images/mac-background2.jpg';
+import macBackground3 from '../assets/images/mac-background3.jpg';
+
+const backgrounds = [macBackground1, macBackground2, macBackground3];
+
+function getRandomBackground() {
+  return `bg-${Math.floor(Math.random() * backgrounds.length) + 1}`;
+}
+
+const optimizedBackgrounds = await Promise.all(
+  backgrounds.map((bg) =>
+    getImage({
+      src: bg,
+      width: 3500,
+    })
+  )
+);
+
+const backgroundMap = Object.fromEntries(
+  optimizedBackgrounds.map((bg, index) => [`bg-${index + 1}`, bg.src])
+);
+---
+
+<Layout
+  title='YourNews - Your Personalized News Terminal'
+  description='Get personalized news in a beautiful terminal interface'
+  canonical='https://yournews.com'
+  openGraph={{
+    url: 'https://yournews.com',
+    title: 'YourNews - Your Personalized News Terminal',
+    description: 'Get personalized news in a beautiful terminal interface',
+    site_name: 'YourNews',
+  }}
+>
+  <AppLayout
+    client:load
+    initialBg={getRandomBackground()}
+    backgroundMap={backgroundMap}
+  />
+</Layout>

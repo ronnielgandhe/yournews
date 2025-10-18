@@ -1,0 +1,124 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <title>YourNews Search Test</title>
+    <style>
+        body { font-family: monospace; padding: 20px; background: #1a1a1a; color: #fff; }
+        button { padding: 10px 20px; margin: 10px; background: #00ff00; border: none; cursor: pointer; }
+        pre { background: #000; padding: 10px; overflow: auto; max-height: 600px; }
+        #status { color: yellow; }
+        .error { color: red; }
+        .success { color: lime; }
+    </style>
+</head>
+<body>
+    <h1>YourNews Search API Test</h1>
+    <div id="status">Ready...</div>
+    
+    <button onclick="testSearch()">Test Search for "trump"</button>
+    <button onclick="testHealth()">Test Health Check</button>
+    
+    <h3>Console Output:</h3>
+    <pre id="output"></pre>
+    
+    <script>
+        const API_BASE = 'http://localhost:8000';
+        const output = document.getElementById('output');
+        const status = document.getElementById('status');
+        
+        function log(msg, type = 'info') {
+            const line = `[${new Date().toLocaleTimeString()}] ${msg}\n`;
+            output.textContent += line;
+            console.log(msg);
+            output.scrollTop = output.scrollHeight;
+        }
+        
+        async function testHealth() {
+            log('🏥 Testing health check...');
+            status.textContent = 'Testing health...';
+            try {
+                const response = await fetch(`${API_BASE}/ai/status`);
+                const data = await response.json();
+                log('✅ Health check passed: ' + JSON.stringify(data, null, 2), 'success');
+                status.textContent = 'Health check OK';
+                status.className = 'success';
+            } catch (err) {
+                log('❌ Health check failed: ' + err.message, 'error');
+                status.textContent = 'Health check FAILED';
+                status.className = 'error';
+            }
+        }
+        
+        async function testSearch() {
+            log('🔍 Testing search for "trump"...');
+            status.textContent = 'Searching...';
+            
+            const prefs = {
+                search: {
+                    timeWindowHours: 72,
+                    sourcesMode: 'all',
+                    allowlist: [],
+                    maxLinks: 12,
+                    summaryStyle: 'short',
+                    useOpenAI: true
+                },
+                ranking: {
+                    recencyAlpha: 0.2,
+                    perDomainCap: 2,
+                    bm25Weight: 1,
+                    profileAlpha: 0,
+                    dedupeNearDupes: true
+                },
+                display: {
+                    linksToShow: 7,
+                    showImages: true,
+                    showMeta: true,
+                    showDebugScores: false
+                }
+            };
+            
+            try {
+                log('📡 Sending POST to /search/panels...');
+                const response = await fetch(`${API_BASE}/search/panels`, {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ query: 'trump', preferences: prefs })
+                });
+                
+                log(`📬 Response status: ${response.status} ${response.statusText}`);
+                
+                if (!response.ok) {
+                    throw new Error(`HTTP ${response.status}`);
+                }
+                
+                const data = await response.json();
+                log('📦 Response data:');
+                log(JSON.stringify(data, null, 2));
+                
+                if (data.panels && data.panels.length > 0) {
+                    const panel = data.panels[0];
+                    log(`✅ SUCCESS! Got panel: "${panel.title}"`);
+                    log(`   - Summary length: ${panel.summaryMd?.length || 0} chars`);
+                    log(`   - Articles: ${panel.items?.length || 0}`);
+                    status.textContent = 'Search successful!';
+                    status.className = 'success';
+                } else {
+                    log('⚠️ No panels in response', 'error');
+                    status.textContent = 'No results';
+                }
+            } catch (err) {
+                log('❌ Search failed: ' + err.message, 'error');
+                log('Stack: ' + err.stack);
+                status.textContent = 'Search FAILED: ' + err.message;
+                status.className = 'error';
+            }
+        }
+        
+        // Auto-run health check on load
+        window.onload = () => {
+            log('🚀 Page loaded, running health check...');
+            testHealth();
+        };
+    </script>
+</body>
+</html>

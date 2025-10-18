@@ -18,6 +18,16 @@ YourNews is an intelligent news aggregator that:
 
 ## Features
 
+### 🔍 Panel-Based Search (NEW!)
+- **Central search interface**: Type anything and get ranked results
+- **Smart classification**: Automatically detects person/event/topic/market queries
+- **Hybrid search**: MongoDB-first with Google RSS fallback
+- **BM25 + recency ranking**: Uses query tokens for relevance scoring
+- **AI summaries**: Top 6 results get OpenAI summaries (or bullet fallbacks)
+- **Entity images**: Wikipedia thumbnails or article og:images
+- **Smart suggestions**: 2-4 related topics extracted from results
+- **Infinite exploration**: Click suggestions to spawn new panels below
+
 ### MVP Feed System
 - **Multi-feed ingestion**: Fetches from Reuters, BBC, NPR, and custom RSS sources
 - **Smart ranking**: BM25-based relevance + recency boost + personalization
@@ -84,6 +94,19 @@ YourNews is an intelligent news aggregator that:
 
 ### Demo Flow
 
+#### Panel Search (New!)
+1. Click **"Search"** tab at the top
+2. Type any query: `"artificial intelligence"`, `"Elon Musk"`, `"AAPL stock"`, etc.
+3. See **ranked panel** with:
+   - Query classification badge (person/event/topic/market)
+   - Entity image (if available)
+   - Summary of top result
+   - 5-7 ranked article links with time-ago
+   - Suggestion chips at bottom
+4. **Click a suggestion** → new panel appears below
+5. **Explore topics** by chaining suggestions
+
+#### Personalized Feed
 1. **Initial load**: Feed shows ~50 recent articles ranked by recency + relevance
 2. **Click "Read" on 3+ articles**: Feed adapts to your interests
 3. **Keywords appear**: See extracted topics from your reading history
@@ -91,6 +114,11 @@ YourNews is an intelligent news aggregator that:
 5. **Test personalization**: Click more AI articles → see more AI content surface
 
 ## API Endpoints
+
+### Panel Search (NEW!)
+- `POST /search/panels` - Get ranked panel for any query
+  - Body: `{ query: string, userId?: string }`
+  - Returns: `{ panel: { query, type, imageUrl, items[] }, suggestions: [] }`
 
 ### MVP Feed & Tracking
 - `GET /feed?userId=<id>` - Personalized ranked feed (top 50 articles)
@@ -115,7 +143,16 @@ YourNews is an intelligent news aggregator that:
 
 ## Architecture Details
 
-### Ranking Algorithm
+### Panel Search Algorithm
+1. **Query Classification**: Detect person (2-3 caps words), market (tickers/financial), event (phrases), or topic (default)
+2. **Hybrid Search**: Try MongoDB first (regex on title/content), fallback to Google RSS if <10 results
+3. **BM25 Ranking**: Calculate scores using query tokens, apply recency boost (1.2× <24h, 1.1× <48h)
+4. **Smart Summaries**: Top 6 get OpenAI summaries (or bullet fallbacks), cached in DB
+5. **Entity Images**: Try Wikipedia REST API, then first article og:image
+6. **Suggestions**: Extract frequent bigrams/keywords from titles, filter stopwords
+7. **Return Panel**: Query + type + image + items[] + suggestions[]
+
+### Feed Ranking Algorithm
 1. **BM25 scoring**: Term frequency-inverse document frequency on title + content
 2. **Recency boost**: Articles < 24h old get 1.15× multiplier
 3. **Keyword nudge**: Title matches user keywords get 1.3× multiplier

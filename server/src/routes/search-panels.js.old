@@ -1,0 +1,221 @@
+// POST /search/panels - Multi-panel search using legacy digest pipeline
+const express = require('express');
+const router = express.Router();
+const RSSParser = require('rss-parser');
+const parser = new RSSParser();
+
+// Use global fetch (Node 18+) when available
+const fetch = globalThis.fetch
+  ? globalThis.fetch.bind(globalThis)
+  : async (...args) => {
+      const mod = await import('node-fetch');
+      return mod.default(...args);
+    };
+
+// Reuse helper from server/index.js - normalize RSS item
+function normalizeRssItem(it) {
+  return {
+    title: it.title || '',
+    url: it.link || it.enclosure || '',
+    source: (it.creator || (it.source && it.source.name)) || 'Google News',
+    publishedAt: it.pubDate || it.isoDate || null,
+    description: it.contentSnippet || it.content || it.summary || ''
+  };
+}
+
+// Reuse helper from server/index.js - fetch Google News RSS for a query
+async function fetchGoogleForQuery(q, pageSize = 15) {
+  const url = `https://news.google.com/rss/search?q=${encodeURIComponent(q)}&hl=en-US&gl=US&ceid=US:en`;
+  const feed = await parser.parseURL(url);
+  const items = (feed && feed.items) ? feed.items.map(normalizeRssItem).slice(0, pageSize) : [];
+  return items;
+}
+
+// Reuse helper from server/index.js - call OpenAI Chat Completions
+async function callOpenAIChat(prompt, system = 'You are a helpful summarization assistant. Output markdown only.') {
+  const key = process.env.OPENAI_API_KEY;
+  if (!key) throw new Error('OPENAI_API_KEY missing');
+  const url = 'https://api.openai.com/v1/chat/completions';
+  const body = {
+    model: 'gpt-4o-mini',
+    messages: [
+      { role: 'system', content: system },
+      { role: 'user', content: prompt }
+    ],
+    temperature: 0.2,
+    max_tokens: 300
+  };
+  const resp = await fetch(url, {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      'Authorization': `Bearer ${key}`
+    },
+    body: JSON.stringify(body)
+  });
+  if (!resp.ok) {
+    const txt = await resp.text().catch(() => '');
+    const err = new Error(`OpenAI error: ${resp.status} ${resp.statusText} - ${txt}`);
+    err.status = resp.status;
+    throw err;
+  }
+  const data = await resp.json();
+  const content = data && data.choices && data.choices[0] && (data.choices[0].message ? data.choices[0].message.content : data.choices[0].text);
+  return String(content || '').trim();
+}
+
+// Build summary using same logic as /ai/digest-from-links
+async function buildSummaryForQuery(query, links) {
+  // Fetch titles for the links (reuse same logic)
+  const fetchTitle = async (u) => {
+    try {
+      const r = await fetch(u, { redirect: 'follow' });
+      const text = await r.text();
+      const m = text.match(/<title>([^<]*)<\/?title>/i);
+      return (m && m[1]) ? m[1].trim() : u;
+    } catch (e) {
+      return u;
+    }
+  };
+
+  const pairs = await Promise.all(links.slice(0, 5).map(async (u) => ({ 
+    url: u.url || u, 
+    title: await fetchTitle(u.url || u) 
+  })));
+
+  const listText = pairs.map(p => `- ${p.title} — ${p.url}`).join('\n');
+  const mdLocal = pairs.map(p => `- [${p.title}](${p.url})`).join('\n');
+
+  // Try OpenAI first (same as /ai/digest-from-links)
+  if (process.env.OPENAI_API_KEY) {
+    try {
+      const prompt = `Write a concise 2-4 sentence summary for the topic: ${query}.\nInclude key developments and context. Output only the summary text.\n\nSources:\n${listText}`;
+      const reply = await callOpenAIChat(prompt, 'Summarize meaning and impact. Provide concise analysis of what\'s happening and why it matters.');
+      if (reply && reply.length > 0) {
+        return reply;
+      }
+    } catch (err) {
+      console.warn('OpenAI summary failed for', query, ':', err.message);
+    }
+  }
+
+  // Fallback: bullet points
+  return mdLocal || `Summary for ${query}`;
+}
+
+// Calculate time ago
+function timeAgo(dateStr) {
+  const now = Date.now();
+  const then = new Date(dateStr).getTime();
+  const diffMs = now - then;
+  const diffMins = Math.floor(diffMs / 60000);
+  const diffHours = Math.floor(diffMs / 3600000);
+  const diffDays = Math.floor(diffMs / 86400000);
+
+  if (diffMins < 60) return `${diffMins}m ago`;
+  if (diffHours < 24) return `${diffHours}h ago`;
+  return `${diffDays}d ago`;
+}
+
+/**
+ * POST /search/panels
+ * Body: { query: string, userId?: string }
+ * Returns: { panels: Array<{ title, type, summary, items }> }
+ */
+router.post('/', async (req, res) => {
+  try {
+    const { query, userId = 'demo' } = req.body;
+
+    if (!query || !query.trim()) {
+      return res.status(400).json({ error: 'Missing query parameter' });
+    }
+
+    console.log('/search/panels: query=', query, 'userId=', userId);
+
+    // Split by comma or " and " (normalize and dedupe)
+    const rawQueries = query
+      .split(/,| and /i)
+      .map(q => q.trim())
+      .filter(q => q.length > 0);
+    
+    const uniqueQueries = [...new Set(rawQueries)];
+    console.log('/search/panels: sub-queries=', uniqueQueries);
+
+    // Build panels in parallel with timeout protection
+    const panels = [];
+    const TIMEOUT = 25000; // 25 seconds per query
+
+    await Promise.all(
+      uniqueQueries.map(async (subQuery) => {
+        try {
+          const result = await Promise.race([
+            (async () => {
+              // Step 1: Fetch Google News links (reuse fetchGoogleForQuery)
+              const links = await fetchGoogleForQuery(subQuery, 15);
+              console.log(`/search/panels: "${subQuery}" found ${links.length} links`);
+
+              if (links.length === 0) {
+                return {
+                  title: subQuery,
+                  type: 'topic',
+                  summary: `No recent news found for "${subQuery}".`,
+                  items: []
+                };
+              }
+
+              // Step 2: Build summary (reuse digest-from-links logic)
+              const summary = await buildSummaryForQuery(subQuery, links);
+
+              // Step 3: Format items
+              const items = links.slice(0, 7).map(link => ({
+                title: link.title,
+                url: link.url,
+                source: link.source,
+                pubDate: link.publishedAt,
+                timeAgo: timeAgo(link.publishedAt)
+              }));
+
+              return {
+                title: subQuery,
+                type: 'topic',
+                summary,
+                items
+              };
+            })(),
+            new Promise((_, reject) => 
+              setTimeout(() => reject(new Error('Timeout')), TIMEOUT)
+            )
+          ]);
+
+          panels.push(result);
+        } catch (err) {
+          console.error(`/search/panels: error for "${subQuery}":`, err.message);
+          // Add failed panel with error message
+          panels.push({
+            title: subQuery,
+            type: 'topic',
+            summary: `Could not fetch news for "${subQuery}". Please try again.`,
+            items: []
+          });
+        }
+      })
+    );
+
+    // Return panels in original order
+    const orderedPanels = uniqueQueries.map(q => 
+      panels.find(p => p.title === q)
+    ).filter(Boolean);
+
+    console.log('/search/panels: returning', orderedPanels.length, 'panels');
+    res.json({ panels: orderedPanels });
+
+  } catch (err) {
+    console.error('Error in /search/panels:', err);
+    res.status(500).json({ 
+      error: 'Failed to generate panels',
+      message: err.message 
+    });
+  }
+});
+
+module.exports = router;

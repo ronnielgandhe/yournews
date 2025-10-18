@@ -1,0 +1,49 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <title>Test Hydration</title>
+</head>
+<body>
+    <h1>Testing YourNews Hydration</h1>
+    <div id="results"></div>
+    
+    <script>
+        const results = document.getElementById('results');
+        
+        // Test 1: Load the page
+        fetch('http://localhost:4321')
+            .then(r => r.text())
+            .then(html => {
+                results.innerHTML += '<h2>✅ Page loaded</h2>';
+                
+                // Check for astro-island
+                if (html.includes('astro-island')) {
+                    results.innerHTML += '<p>✅ astro-island elements found</p>';
+                } else {
+                    results.innerHTML += '<p>❌ No astro-island elements</p>';
+                }
+                
+                // Check for React scripts
+                if (html.includes('react') || html.includes('React')) {
+                    results.innerHTML += '<p>✅ React references found</p>';
+                } else {
+                    results.innerHTML += '<p>❌ No React references</p>';
+                }
+                
+                // Check for component props
+                if (html.includes('props') || html.includes('client:load')) {
+                    results.innerHTML += '<p>✅ Component props/directives found</p>';
+                } else {
+                    results.innerHTML += '<p>❌ No component directives</p>';
+                }
+                
+                // Show a snippet of the HTML
+                const snippet = html.substring(html.indexOf('<body'), html.indexOf('<body') + 500);
+                results.innerHTML += '<h3>HTML Snippet:</h3><pre>' + snippet.replace(/</g, '&lt;') + '</pre>';
+            })
+            .catch(err => {
+                results.innerHTML += '<p>❌ Error: ' + err.message + '</p>';
+            });
+    </script>
+</body>
+</html>
