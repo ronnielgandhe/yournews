@@ -379,3 +379,194 @@
   letter-spacing: 0.5px;
   margin-bottom: 8px;
 }
+
+/* Loading Shimmer */
+.yn-skel {
+  background: linear-gradient(90deg, rgba(255, 255, 255, 0.06), rgba(255, 255, 255, 0.12), rgba(255, 255, 255, 0.06));
+  background-size: 200% 100%;
+  animation: yn-shimmer 1.1s linear infinite;
+  border-radius: 8px;
+}
+
+@keyframes yn-shimmer {
+  0% { background-position: 200% 0; }
+  100% { background-position: -200% 0; }
+}
+
+.yn-skel-line {
+  height: 12px;
+  margin: 8px 0;
+}
+
+/* Settings Popover */
+.yn-settings-popover {
+  position: absolute;
+  top: calc(100% + 8px);
+  right: 0;
+  width: 320px;
+  background: rgba(0, 0, 0, 0.85);
+  border: 1px solid rgba(255, 255, 255, 0.15);
+  border-radius: 12px;
+  padding: 16px;
+  backdrop-filter: blur(32px) saturate(130%);
+  -webkit-backdrop-filter: blur(32px) saturate(130%);
+  box-shadow: 0 10px 30px rgba(0, 0, 0, 0.45);
+  z-index: 9999;
+  opacity: 0;
+  pointer-events: none;
+  transform: translateY(-8px);
+  transition: opacity 0.2s ease, transform 0.2s ease;
+}
+
+.yn-settings-trigger:hover .yn-settings-popover,
+.yn-settings-popover:hover {
+  opacity: 1;
+  pointer-events: auto;
+  transform: translateY(0);
+}
+
+.yn-settings-section {
+  margin-bottom: 14px;
+}
+
+.yn-settings-section:last-child {
+  margin-bottom: 0;
+}
+
+.yn-settings-label {
+  display: block;
+  font-size: 11px;
+  font-weight: 600;
+  color: rgba(233, 238, 247, 0.65);
+  text-transform: uppercase;
+  letter-spacing: 0.3px;
+  margin-bottom: 6px;
+}
+
+.yn-settings-radio-group,
+.yn-settings-segmented {
+  display: flex;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.yn-settings-radio-label {
+  display: inline-flex;
+  align-items: center;
+  font-size: 13px;
+  color: rgba(233, 238, 247, 0.85);
+  cursor: pointer;
+  user-select: none;
+}
+
+.yn-settings-radio-label input {
+  margin-right: 6px;
+}
+
+.yn-settings-segment {
+  flex: 1;
+  padding: 6px 12px;
+  font-size: 12px;
+  text-align: center;
+  border: 1px solid rgba(255, 255, 255, 0.18);
+  background: rgba(255, 255, 255, 0.04);
+  color: rgba(233, 238, 247, 0.75);
+  border-radius: 6px;
+  cursor: pointer;
+  transition: all 0.15s ease;
+}
+
+.yn-settings-segment:hover {
+  background: rgba(255, 255, 255, 0.08);
+}
+
+.yn-settings-segment.active {
+  background: rgba(126, 241, 196, 0.15);
+  border-color: rgba(126, 241, 196, 0.35);
+  color: #7EF1C4;
+  font-weight: 600;
+}
+
+.yn-settings-slider {
+  width: 100%;
+  margin-top: 4px;
+}
+
+.yn-settings-slider-value {
+  font-size: 12px;
+  color: rgba(233, 238, 247, 0.85);
+  margin-left: 8px;
+}
+
+.yn-settings-toggle {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+}
+
+.yn-toggle-switch {
+  position: relative;
+  width: 44px;
+  height: 24px;
+  background: rgba(255, 255, 255, 0.12);
+  border-radius: 12px;
+  border: 1px solid rgba(255, 255, 255, 0.18);
+  cursor: pointer;
+  transition: background 0.2s ease;
+}
+
+.yn-toggle-switch.on {
+  background: rgba(126, 241, 196, 0.25);
+  border-color: rgba(126, 241, 196, 0.35);
+}
+
+.yn-toggle-knob {
+  position: absolute;
+  top: 2px;
+  left: 2px;
+  width: 18px;
+  height: 18px;
+  background: #fff;
+  border-radius: 50%;
+  transition: transform 0.2s ease;
+}
+
+.yn-toggle-switch.on .yn-toggle-knob {
+  transform: translateX(20px);
+}
+
+.yn-settings-select {
+  width: 100%;
+  padding: 8px 12px;
+  font-size: 13px;
+  background: rgba(255, 255, 255, 0.06);
+  border: 1px solid rgba(255, 255, 255, 0.14);
+  border-radius: 8px;
+  color: rgba(233, 238, 247, 0.85);
+  outline: none;
+  cursor: pointer;
+}
+
+.yn-ai-badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 3px 8px;
+  font-size: 10px;
+  font-weight: 600;
+  border-radius: 6px;
+  text-transform: uppercase;
+  letter-spacing: 0.3px;
+}
+
+.yn-ai-badge.on {
+  background: rgba(126, 241, 196, 0.15);
+  color: #7EF1C4;
+  border: 1px solid rgba(126, 241, 196, 0.25);
+}
+
+.yn-ai-badge.off {
+  background: rgba(255, 255, 255, 0.08);
+  color: rgba(233, 238, 247, 0.65);
+  border: 1px solid rgba(255, 255, 255, 0.18);
+}

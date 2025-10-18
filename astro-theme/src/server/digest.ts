@@ -20,7 +20,7 @@ interface StructuredDigestResult {
 export async function buildDigestStructured(
   urls: string[],
   titles: { title: string; source?: string }[],
-  style: 'bullets' | 'short' | 'detailed',
+  summaryLevel: 'short' | 'medium' | 'long',
   useOpenAI: boolean,
   windowHours: number = 72
 ): Promise<StructuredDigestResult> {
@@ -33,6 +33,17 @@ export async function buildDigestStructured(
         title: t.title,
         source: t.source || 'Unknown',
       }));
+
+      // Adjust prompt based on summary level
+      let systemPrompt = 'You are a sober news analyst. Be precise, recent, non-hype. No invented facts. Given article titles and sources, write JSON ONLY with keys: insights, takeaways, actions, watch, tags. ';
+      
+      if (summaryLevel === 'short') {
+        systemPrompt += 'Insights: 2-3 concrete changes (1 sentence each). Takeaways: 2 bullets. Actions: 2-3 bullets. Watch: 2-3 bullets. Tags: 3-5 hashtags.';
+      } else if (summaryLevel === 'medium') {
+        systemPrompt += 'Insights: 3-5 concrete changes (1-2 sentences each). Takeaways: 3 bullets. Actions: 3-4 bullets. Watch: 3-4 bullets. Tags: 5-6 hashtags.';
+      } else { // long
+        systemPrompt += 'Insights: 5-7 concrete changes with context (2-3 sentences each). Takeaways: 4-5 bullets with details. Actions: 5-6 specific steps. Watch: 5-6 specific triggers. Tags: 6-8 hashtags.';
+      }
 
       const response = await fetch('https://api.openai.com/v1/chat/completions', {
         method: 'POST',
@@ -47,13 +58,13 @@ export async function buildDigestStructured(
           messages: [
             {
               role: 'system',
-              content: 'You are a sober news analyst. Be precise, recent, non-hype. No invented facts. Given article titles and sources, write JSON ONLY with keys: insights, takeaways, actions, watch, tags. Insights: concrete changes in last 24-72h (3-6 bullets, 1 sentence each). Takeaways: what it means; who it affects; likely direction (2-4 bullets). Actions: safe, non-financial next steps a reader can do (monitor pages, set alerts, compare metrics, contact reps, prepare docs, etc.) (3-5 bullets). Watch: specific upcoming events or triggers to track (votes, filings, launches, deadlines) (3-5 bullets). Tags: 3-7 hashtags.',
+              content: systemPrompt,
             },
             {
               role: 'user',
               content: JSON.stringify({
                 articles: articleList,
-                style: style,
+                summaryLevel: summaryLevel,
                 windowHours: windowHours,
               }),
             },

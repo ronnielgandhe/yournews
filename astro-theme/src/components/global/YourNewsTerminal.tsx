@@ -9,6 +9,7 @@ import {
   type Quadrant,
   type Rect
 } from '../../lib/layout';
+import { loadPrefs, type AppPrefs } from '../../lib/prefs';
 
 interface WindowData {
   id: string;
@@ -22,6 +23,7 @@ interface WindowData {
   minimized: boolean;
   loading: boolean;
   error: string | null;
+  usedOpenAI?: boolean;
   data: {
     summaryMd: string;
     insights: string[];
@@ -222,12 +224,15 @@ export default function YourNewsTerminal() {
       localStorage.setItem("yn_recentQueries", JSON.stringify(updated));
     }
     
-    topics.forEach((topic, idx) => createPanel(topic, idx, options?.profile));
+    // Load preferences for this search
+    const prefs = loadPrefs();
+    
+    topics.forEach((topic, idx) => createPanel(topic, idx, options?.profile, prefs));
     if (inputRef.current) inputRef.current.value = '';
     setSearchInput('');
   };
 
-  const createPanel = async (topic: string, index: number, profile?: RankProfileName) => {
+  const createPanel = async (topic: string, index: number, profile?: RankProfileName, preferences?: AppPrefs) => {
     if (profile) {
       console.info('[YN] trending chip clicked', topic, profile);
     }
@@ -281,7 +286,7 @@ export default function YourNewsTerminal() {
       const response = await fetch('/api/search-panels', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ query: topic, profile }),
+        body: JSON.stringify({ query: topic, profile, preferences }),
         signal: controller.signal,
       });
       clearTimeout(timeoutId);
@@ -314,6 +319,7 @@ export default function YourNewsTerminal() {
       setWindows(prev => prev.map(w => w.id === windowId ? {
         ...w,
         loading: false,
+        usedOpenAI: panel.meta?.usedOpenAI || false,
         data: {
           summaryMd: panel.summaryMd,
           insights: panel.insights || [],
@@ -560,8 +566,13 @@ function DraggableWindow({ window: win, onClose, onMinimize, onFocus, onMove, on
           <div className='window-dot green' aria-label='Maximize' />
         </div>
         <div className='flex-1' />
+        {!win.loading && typeof win.usedOpenAI === 'boolean' && (
+          <div className={`yn-ai-badge ${win.usedOpenAI ? 'on' : 'off'}`}>
+            AI: {win.usedOpenAI ? 'On' : 'Off'}
+          </div>
+        )}
         {win.data && win.data.items.length > 0 && win.data.items[0].timeAgo && (
-          <div className='flex items-center gap-1.5'>
+          <div className='flex items-center gap-1.5 ml-2'>
             <div className='w-2 h-2 rounded-full bg-cyan-400' />
             <span className='text-cyan-400 text-xs font-medium'>{win.data.items[0].timeAgo}</span>
           </div>
@@ -569,9 +580,18 @@ function DraggableWindow({ window: win, onClose, onMinimize, onFocus, onMove, on
       </div>
       <div className='window-body text-sm text-white' style={{ height: `${bodyHeight}px` }}>
         {win.loading && (
-          <div className='flex items-center justify-center py-12'>
-            <div className='animate-spin rounded-full h-8 w-8 border-b-2 border-cyan-400' />
-            <span className='ml-3 text-gray-400'>Loading...</span>
+          <div className='p-4'>
+            <div className='yn-skel yn-skel-line' style={{ width: '60%', height: '20px', marginBottom: '16px' }} />
+            <div className='flex gap-2 mb-4'>
+              <div className='yn-skel' style={{ width: '60px', height: '24px', borderRadius: '12px' }} />
+              <div className='yn-skel' style={{ width: '70px', height: '24px', borderRadius: '12px' }} />
+              <div className='yn-skel' style={{ width: '80px', height: '24px', borderRadius: '12px' }} />
+            </div>
+            <div className='yn-skel' style={{ width: '100%', height: '120px', borderRadius: '12px', marginBottom: '12px' }} />
+            <div className='yn-skel yn-skel-line' style={{ width: '100%' }} />
+            <div className='yn-skel yn-skel-line' style={{ width: '95%' }} />
+            <div className='yn-skel yn-skel-line' style={{ width: '90%' }} />
+            <div className='yn-skel yn-skel-line' style={{ width: '85%' }} />
           </div>
         )}
         {win.error && (

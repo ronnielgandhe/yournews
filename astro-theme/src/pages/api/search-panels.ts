@@ -19,7 +19,7 @@ export const POST: APIRoute = async ({ request }) => {
       );
     }
 
-    const prefs = body.preferences || {};
+    const prefs = body.preferences || null;
     const profileName = (body.profile as RankProfileName) || 'default';
     const raw = body.query.trim();
     const topics = raw
@@ -32,12 +32,20 @@ export const POST: APIRoute = async ({ request }) => {
     
     for (const topic of topics) {
       try {
-        // 1) Get ranking profile
-        const rankProfile = getRankProfile(profileName);
+        // 1) Get ranking profile and merge with preferences
+        let rankProfile = getRankProfile(profileName);
+        
+        // Apply preference overrides
+        if (prefs) {
+          if (prefs.perDomainCap) rankProfile.perDomainCap = prefs.perDomainCap;
+          if (typeof prefs.recencyAlpha === 'number') rankProfile.recencyAlpha = prefs.recencyAlpha;
+          if (prefs.windowHours) rankProfile.windowHours = prefs.windowHours;
+        }
+        
         const hours = rankProfile.windowHours || 72;
         
         // 2) Retrieve from Google News
-        const maxLinks = prefs?.search?.maxLinks ?? 20;
+        const maxLinks = 20;
         const items = await fetchGoogleNews(topic, maxLinks);
         console.info('[YN api] Fetched', { topic, count: items.length });
 
@@ -80,10 +88,12 @@ export const POST: APIRoute = async ({ request }) => {
         // 4) Build digest with structured output
         const urls = ranked.slice(0, 12).map((i: any) => i.url).filter(Boolean);
         const titles = ranked.slice(0, 12).map((i: any) => ({ title: i.title, source: i.source }));
-        const style = prefs?.search?.summaryStyle ?? 'short';
-        const useOpenAI = prefs?.search?.useOpenAI !== false;
         
-        const digest = await buildDigestStructured(urls, titles, style, useOpenAI, hours);
+        // Use preferences for summaryLevel and openai toggle
+        const summaryLevel = prefs?.summaryLevel || 'short';
+        const useOpenAI = prefs?.openai !== false;
+        
+        const digest = await buildDigestStructured(urls, titles, summaryLevel, useOpenAI, hours);
 
         console.info('[YN api] panel', { 
           topic, 
@@ -97,7 +107,7 @@ export const POST: APIRoute = async ({ request }) => {
         });
 
         // 5) Panel response with structured fields
-        const showN = prefs?.display?.linksToShow ?? 7;
+        const showN = 7;
         panels.push({
           title: topic,
           type: 'topic',

@@ -7,6 +7,7 @@ import {
   IoCellular,
   IoSettingsOutline,
 } from 'react-icons/io5';
+import { loadPrefs, savePrefs, type AppPrefs } from '../../lib/prefs';
 
 interface MacToolbarProps {
   onSettingsClick: () => void;
@@ -15,6 +16,8 @@ interface MacToolbarProps {
 export default function MacToolbar({ onSettingsClick }: MacToolbarProps) {
   const [currentDateTime, setCurrentDateTime] = useState(new Date());
   const [activeMenu, setActiveMenu] = useState<string | null>(null);
+  const [prefs, setPrefs] = useState<AppPrefs>(loadPrefs());
+  const [showSettings, setShowSettings] = useState(false);
 
   useEffect(() => {
     const timer = setInterval(() => {
@@ -32,6 +35,12 @@ export default function MacToolbar({ onSettingsClick }: MacToolbarProps) {
       return () => document.removeEventListener('click', handleClickOutside);
     }
   }, [activeMenu]);
+
+  const updatePref = <K extends keyof AppPrefs>(key: K, value: AppPrefs[K]) => {
+    const updated = { ...prefs, [key]: value };
+    setPrefs(updated);
+    savePrefs(updated);
+  };
 
   const toggleMenu = (menu: string, e: MouseEvent) => {
     e.stopPropagation();
@@ -135,13 +144,118 @@ export default function MacToolbar({ onSettingsClick }: MacToolbarProps) {
           </div>
 
           {/* Settings Menu */}
-          <button 
-            onClick={onSettingsClick}
-            className='cursor-pointer hover:bg-white/10 px-2 py-0.5 rounded transition-colors'
-            title='Settings (Cmd+,)'
+          <div 
+            className='relative yn-settings-trigger'
+            onMouseEnter={() => setShowSettings(true)}
+            onMouseLeave={() => setShowSettings(false)}
           >
-            Settings
-          </button>
+            <button 
+              className='cursor-pointer hover:bg-white/10 px-2 py-0.5 rounded transition-colors'
+              title='Settings (Cmd+,)'
+            >
+              Settings
+            </button>
+            {showSettings && (
+              <div className='yn-settings-popover' style={{ opacity: 1, pointerEvents: 'auto', transform: 'translateY(0)' }}>
+                {/* Summary Level */}
+                <div className='yn-settings-section'>
+                  <label className='yn-settings-label'>Summary Length</label>
+                  <div className='yn-settings-radio-group'>
+                    {(['short', 'medium', 'long'] as const).map((level) => (
+                      <label key={level} className='yn-settings-radio-label'>
+                        <input
+                          type='radio'
+                          name='summaryLevel'
+                          checked={prefs.summaryLevel === level}
+                          onChange={() => updatePref('summaryLevel', level)}
+                        />
+                        {level}
+                      </label>
+                    ))}
+                  </div>
+                </div>
+
+                {/* Time Window */}
+                <div className='yn-settings-section'>
+                  <label className='yn-settings-label'>Time Window</label>
+                  <div className='yn-settings-segmented'>
+                    {([24, 36, 48, 72] as const).map((hours) => (
+                      <button
+                        key={hours}
+                        className={`yn-settings-segment ${prefs.windowHours === hours ? 'active' : ''}`}
+                        onClick={() => updatePref('windowHours', hours)}
+                      >
+                        {hours}h
+                      </button>
+                    ))}
+                  </div>
+                </div>
+
+                {/* Per-Domain Cap */}
+                <div className='yn-settings-section'>
+                  <label className='yn-settings-label'>Per-Domain Cap</label>
+                  <div className='yn-settings-segmented'>
+                    {([1, 2, 3] as const).map((cap) => (
+                      <button
+                        key={cap}
+                        className={`yn-settings-segment ${prefs.perDomainCap === cap ? 'active' : ''}`}
+                        onClick={() => updatePref('perDomainCap', cap)}
+                      >
+                        {cap}
+                      </button>
+                    ))}
+                  </div>
+                </div>
+
+                {/* Recency Weight */}
+                <div className='yn-settings-section'>
+                  <label className='yn-settings-label'>
+                    Recency Weight
+                    <span className='yn-settings-slider-value'>{prefs.recencyAlpha.toFixed(2)}</span>
+                  </label>
+                  <input
+                    type='range'
+                    min='0'
+                    max='0.6'
+                    step='0.05'
+                    value={prefs.recencyAlpha}
+                    onChange={(e) => updatePref('recencyAlpha', parseFloat(e.target.value))}
+                    className='yn-settings-slider'
+                  />
+                </div>
+
+                {/* AI Toggle */}
+                <div className='yn-settings-section'>
+                  <div className='yn-settings-toggle'>
+                    <label className='yn-settings-label' style={{ marginBottom: 0 }}>AI Summaries</label>
+                    <div
+                      className={`yn-toggle-switch ${prefs.openai ? 'on' : ''}`}
+                      onClick={() => updatePref('openai', !prefs.openai)}
+                    >
+                      <div className='yn-toggle-knob' />
+                    </div>
+                  </div>
+                </div>
+
+                {/* Default Profile */}
+                <div className='yn-settings-section'>
+                  <label className='yn-settings-label'>Default Profile</label>
+                  <select
+                    className='yn-settings-select'
+                    value={prefs.defaultProfile}
+                    onChange={(e) => updatePref('defaultProfile', e.target.value as AppPrefs['defaultProfile'])}
+                  >
+                    <option value='default'>Default</option>
+                    <option value='technology'>Technology</option>
+                    <option value='finance'>Finance</option>
+                    <option value='ai'>AI</option>
+                    <option value='sports'>Sports</option>
+                    <option value='world'>World</option>
+                  </select>
+                </div>
+              </div>
+            )}
+          </div>
         </div>
         <div className='flex items-center space-x-4'>
           <IoSettingsOutline 
